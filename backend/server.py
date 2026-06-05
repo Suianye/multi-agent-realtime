@@ -1,119 +1,96 @@
-"""WebSocket服务器 - 实时多AI工具协作"""
+"""
+AI工作室 - WebSocket服务器
+"""
 import asyncio
 import json
 import time
-import websockets
-from typing import Set, Dict
-from agents import create_agents
-from dispatcher import select_agent, analyze_task
+import sys
+import os
 
-class CollaborationServer:
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import websockets
+from typing import Set
+from agents import create_agents
+from dispatcher import StudioDispatcher
+
+
+class StudioServer:
     def __init__(self):
         self.clients: Set = set()
         self.agents = create_agents()
-        self.running = False
-    
-    async def broadcast(self, message: dict):
+        self.dispatcher = StudioDispatcher(self.agents)
+        self.dispatcher.set_broadcaster(self.broadcast)
+
+    async def broadcast(self, message):
         if self.clients:
-            msg = json.dumps(message, ensure_ascii=False)
-            await asyncio.gather(*[c.send(msg) for c in self.clients], return_exceptions=True)
-    
-    def make_log(self, source, target, message):
-        return {"type": "log", "source": source, "target": target, "message": message}
-    
-    def make_status(self, agent_id, status, task=None):
-        return {"type": "agent_status", "agent": agent_id, "status": status, "task": task}
-    
-    async def execute_task(self, task_data: dict):
-        prompt = task_data.get("prompt", "")
-        mode = task_data.get("mode", "auto")
-        task_name = task_data.get("name", "未命名任务")
-        
-        await self.broadcast(self.make_log("👤 用户", "🎯 系统", f"提交任务: {task_name}"))
-        
-        task_type = analyze_task(prompt)
-        await self.broadcast(self.make_log("🎯 调度器", "📊 分析", f"任务类型: {task_type}"))
-        
-        selected = select_agent(prompt, self.agents, mode)
-        await self.broadcast(self.make_log("🎯 调度器", "📋 策略", f"模式: {mode}, 代理: {selected}"))
-        
-        results = []
-        
-        if mode in ("parallel", "compete"):
-            # 并行执行
-            tasks = []
-            for agent_id in selected:
-                agent = self.agents[agent_id]
-                agent.status = "working"
-                agent.current_task = task_name
-                await self.broadcast(self.make_status(agent_id, "working", task_name))
-                tasks.append(self.run_agent(agent, prompt))
-            
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            for i, agent_id in enumerate(selected):
-                agent = self.agents[agent_id]
-                agent.status = "idle"
-                agent.current_task = None
-                await self.broadcast(self.make_status(agent_id, "idle"))
-                
-                result = results[i] if i < len(results) else "无结果"
-                if isinstance(result, Exception):
-                    result = f"错误: {result}"
-                await self.broadcast({
-                    "type": "task_result",
-                    "agent": agent_id,
-                    "result": str(result)[:500],
-                    "duration": 0
-                })
-        else:
-            # 串行执行
-            for agent_id in selected:
-                agent = self.agents[agent_id]
-                agent.status = "working"
-                agent.current_task = task_name
-                await self.broadcast(self.make_status(agent_id, "working", task_name))
-                
+            msg = json.dumps(message, ensure_ascii=False, default=str)
+            dead = set()
+            for c in self.clients:
                 try:
-                    result = await self.run_agent(agent, prompt)
-                    await self.broadcast({
-                        "type": "task_result",
-                        "agent": agent_id,
-                        "result": str(result)[:500],
-                        "duration": 0
-                    })
-                except Exception as e:
-                    await self.broadcast(self.make_log("❌ 错误", agent_id, str(e)))
-                
-                agent.status = "idle"
-                agent.current_task = None
-                await self.broadcast(self.make_status(agent_id, "idle"))
-        
-        await self.broadcast(self.make_log("🎯 系统", "✅ 完成", f"任务 {task_name} 执行完成"))
-    
-    async def run_agent(self, agent, prompt):
-        return await agent.execute(prompt, lambda s,t,m: asyncio.ensure_future(
-            self.broadcast(self.make_log(f"{agent.icon} {s}", t, m))
-        ))
-    
-    async def handler(self, websocket, path):
+                    await c.send(msg)
+                except Exception:
+                    dead.add(c)
+            self.clients -= dead
+
+    async def handler(self, websocket):
         self.clients.add(websocket)
-        await self.broadcast(self.make_log("🎯 系统", "🌐 连接", f"新客户端连接"))
+        await self.broadcast({"type": "log", "source": "系统", "target": "连接", "message": "新客户端连接 (共 {} 个)".format(len(self.clients))})
+
+        # 发送代理状态 + 可用性
+        for aid, agent in self.agents.items():
+            await websocket.send(json.dumps({
+                "type": "agent_status", "agent": aid, "status": agent.status, "available": agent.available
+            }, ensure_ascii=False))
+
         try:
             async for message in websocket:
-                data = json.loads(message)
-                if data.get("type") == "execute_task":
-                    asyncio.create_task(self.execute_task(data.get("task", {})))
-        except:
+                try:
+                    data = json.loads(message)
+                    await self._handle(data)
+                except json.JSONDecodeError:
+                    pass
+        except websockets.exceptions.ConnectionClosed:
             pass
         finally:
             self.clients.discard(websocket)
-    
+
+    async def _handle(self, data):
+        msg_type = data.get("type")
+
+        if msg_type == "start_project":
+            name = data.get("name", "未命名")
+            req = data.get("requirement", "")
+            if req:
+                asyncio.create_task(self._run_project(name, req))
+
+        elif msg_type == "execute_task":
+            prompt = data.get("prompt", "")
+            if prompt:
+                asyncio.create_task(self._run_project(prompt[:30], prompt))
+
+    async def _run_project(self, name, requirement):
+        try:
+            await self.dispatcher.start_project(name, requirement)
+        except Exception as e:
+            await self.broadcast({"type": "log", "source": "系统", "target": "错误", "message": "项目执行失败: {}".format(str(e)[:200])})
+            await self.broadcast({"type": "phase_change", "phase": "error", "message": "项目执行出错"})
+
     async def start(self, host="0.0.0.0", port=8765):
-        print(f"🚀 WebSocket服务器启动在 ws://{host}:{port}")
+        print("=" * 50)
+        print("  AI工作室服务器")
+        print("  WebSocket: ws://{}:{}".format(host, port))
+        print("  前端: 打开 frontend/index.html")
+        # 显示代理可用性
+        for aid, agent in self.agents.items():
+            status = "可用" if agent.available else "未安装(使用演示模式)"
+            print("  {} {}: {}".format(agent.icon, agent.name, status))
+        print("=" * 50)
+
         async with websockets.serve(self.handler, host, port):
             await asyncio.Future()
 
+
 if __name__ == "__main__":
-    server = CollaborationServer()
+    server = StudioServer()
     asyncio.run(server.start())

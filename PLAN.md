@@ -1,139 +1,61 @@
-# 多AI工具实时协作系统 - 实现计划
+# AI工作室 - 多代理协作系统
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
+## 架构
 
-**Goal:** 创建一个实时多AI工具协作系统，让Claude Code、Codex、OpenClaw、Hermes Agent真正协作执行任务，并通过Web界面实时可视化。
+```
+用户需求 → Hermes(项目经理) 拆解任务
+                ↓
+    ┌──────────┼──────────┐
+    ↓          ↓          ↓
+Claude Code  Codex    OpenClaw
+ (开发者)    (优化师)   (审查员)
+    ↓          ↓          ↓
+    └──────────┼──────────┘
+               ↓
+        审查循环 (不通过→修订→再审)
+               ↓
+           项目完成
+```
 
-**Architecture:** 
-- 后端：Python + asyncio + WebSocket，负责调用各AI工具CLI并实时推送状态
-- 前端：纯HTML/CSS/JS，通过WebSocket接收实时数据并渲染
-- 通信：WebSocket双向通信，JSON消息格式
+## 角色分工
 
-**Tech Stack:** Python 3.11+, asyncio, subprocess, websockets, HTML5, CSS3, JavaScript
+| 代理 | 角色 | 能力 |
+|------|------|------|
+| Hermes | 项目经理 | 需求分析、任务分解、团队协调 |
+| Claude Code | 开发者 | 写代码、实现功能、调试 |
+| Codex | 优化师 | 代码优化、重构、性能改进 |
+| OpenClaw | 审查员 | 代码审查、质量检查、安全分析 |
 
----
+## 协作流程
 
-## 已确认的CLI调用方式
+1. **需求分析** - Hermes 分析用户需求，拆解为子任务
+2. **任务分配** - 根据代理能力分配子任务
+3. **并行执行** - 无依赖的任务并行执行
+4. **审查循环** - 代码类任务由 OpenClaw 审查
+   - 通过 → 完成
+   - 不通过 → 返回修改（最多2次）
+5. **项目完成** - 所有子任务完成后汇报
 
-| 工具 | 非交互式调用 | 备注 |
-|------|-------------|------|
-| Claude Code | `claude -p "prompt"` | `-p` 参数非交互模式 |
-| Codex | `codex exec "prompt"` | `exec` 子命令 |
-| OpenClaw | `openclaw agent -m "prompt" --json` | `agent` 子命令 + `--json` 输出 |
-| Hermes | 通过 `delegate_task` 工具调用 | 内置工具 |
-
----
-
-## Task 1: 创建后端服务器 (server.py)
-
-**Objective:** 创建WebSocket服务器，处理前端连接和任务分发
-
-**Files:**
-- Create: `C:/Users/MECHREVO/multi-agent-realtime/backend/server.py`
-
-**功能:**
-1. WebSocket服务器监听端口8765
-2. 接收前端连接，维护客户端列表
-3. 接收任务请求，分发给代理管理器
-4. 实时广播代理状态和日志
-
----
-
-## Task 2: 创建代理管理器 (agents.py)
-
-**Objective:** 封装4个AI工具的CLI调用
-
-**Files:**
-- Create: `C:/Users/MECHREVO/multi-agent-realtime/backend/agents.py`
-
-**功能:**
-1. 定义统一的Agent接口
-2. 实现ClaudeCodeAgent, CodexAgent, OpenClawAgent, HermesAgent
-3. 异步调用CLI，捕获输出
-4. 返回结构化结果
-
----
-
-## Task 3: 创建任务调度器 (dispatcher.py)
-
-**Objective:** 根据任务类型选择最佳代理
-
-**Files:**
-- Create: `C:/Users/MECHREVO/multi-agent-realtime/backend/dispatcher.py`
-
-**功能:**
-1. 分析任务类型（代码生成、优化、审查、调试）
-2. 根据代理能力选择最佳执行者
-3. 支持串行、并行、竞争三种模式
-
----
-
-## Task 4: 创建前端界面 (index.html)
-
-**Objective:** 实时可视化界面
-
-**Files:**
-- Create: `C:/Users/MECHREVO/multi-agent-realtime/frontend/index.html`
-
-**功能:**
-1. WebSocket连接后端
-2. 代理状态卡片（实时更新）
-3. 任务队列展示
-4. 通信日志面板
-5. 任务输入和控制按钮
-
----
-
-## Task 5: 集成测试
-
-**Objective:** 端到端测试
-
-**验证步骤:**
-1. 启动后端服务器
-2. 打开前端界面
-3. 输入测试任务
-4. 观察代理执行和实时更新
-
----
-
-## 消息协议
+## 消息协议 (WebSocket JSON)
 
 ### 前端 → 后端
-```json
-{
-  "type": "execute_task",
-  "task": {
-    "name": "任务名称",
-    "prompt": "任务内容",
-    "mode": "auto|serial|parallel|compete"
-  }
-}
-```
+- `start_project`: {name, requirement}
+- `execute_task`: {prompt, mode} (兼容旧版)
 
 ### 后端 → 前端
-```json
-{
-  "type": "agent_status",
-  "agent": "claude-code",
-  "status": "working|idle|error",
-  "task": "当前任务"
-}
-```
+- `agent_status`: 代理状态变化
+- `log`: 实时日志
+- `phase_change`: 阶段变化
+- `task_breakdown`: 任务分解结果
+- `task_status`: 子任务状态变化
+- `task_result`: 任务执行结果
+- `project_complete`: 项目完成
 
-```json
-{
-  "type": "log",
-  "source": "协调器",
-  "target": "claude-code",
-  "message": "分配任务: xxx"
-}
-```
+## 启动
 
-```json
-{
-  "type": "task_result",
-  "agent": "claude-code",
-  "result": "执行结果",
-  "duration": 3.5
-}
+```bash
+cd ~/multi-agent-realtime
+pip install websockets
+python backend/server.py
+# 浏览器打开 frontend/index.html
 ```

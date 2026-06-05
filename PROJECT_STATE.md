@@ -1,57 +1,34 @@
-# Multi-Agent Realtime Project - 当前状态
+# AI工作室 - 项目状态
 
-## 原始需求 (用户提出)
-创建一个实时多AI工具协作系统：
-- Claude Code、Codex、OpenClaw、Hermes Agent 可以协同工作
-- WebSocket 后端实现实时通信
-- Web 可视化前端显示：
-  - 实时代理状态
-  - 任务分配
-  - 通信日志
+## 当前版本: v2.0
 
-## 项目概述
-实时多AI工具协作系统，支持 Claude Code、Codex、OpenClaw、Hermes Agent 协同工作。
+### 已实现功能
+1. ✅ 代理角色分工 (项目经理/开发者/优化师/审查员)
+2. ✅ 任务自动分解 (Hermes 分析需求生成子任务)
+3. ✅ 依赖管理 (按依赖顺序执行)
+4. ✅ 审查循环 (OpenClaw 审查代码，不通过返回修改)
+5. ✅ 并行执行 (无依赖任务并行)
+6. ✅ WebSocket 实时通信
+7. ✅ 前端可视化 (代理状态/任务树/日志/结果)
 
-## 已完成的功能
-1. ✅ WebSocket 后端 (server.py) - ws://localhost:8765
-2. ✅ AI代理管理器 (agents.py) - 4个代理类
-3. ✅ 任务调度器 (dispatcher.py) - 4种模式 (auto/serial/parallel/compete)
-4. ✅ 可视化前端 (frontend/index.html) - 深色主题，实时状态
-5. ✅ GitHub 仓库创建并推送 - https://github.com/Suianye/multi-agent-realtime
-
-## 待完善项目
-1. ❌ .gitignore 文件
-2. ❌ README.md 文档
-3. ❌ requirements.txt 依赖文件
-4. ❌ 删除 token 文件 (安全问题)
-5. ❌ gh CLI 持久化认证
-6. ❌ 项目测试文件
-7. ❌ 部署文档
-
-## 技术栈
-- 后端: Python + websockets
-- 前端: 原生 HTML/CSS/JS (无依赖)
-- 通信: WebSocket JSON 协议
-- AI工具: claude, codex, openclaw, hermes CLI
-
-## 文件结构
+### 文件结构
 ```
 multi-agent-realtime/
-├── PLAN.md                 # 项目计划
+├── PLAN.md
+├── PROJECT_STATE.md
+├── requirements.txt
+├── .gitignore
 ├── backend/
-│   ├── agents.py           # AI代理管理器
-│   ├── dispatcher.py       # 任务调度器
-│   └── server.py           # WebSocket服务器
+│   ├── agents.py       # 4个代理类 + 数据模型
+│   ├── dispatcher.py   # 项目调度器
+│   └── server.py       # WebSocket服务器
 └── frontend/
-    └── index.html          # 可视化前端
+    └── index.html      # 可视化界面
 ```
 
-## 快速启动
+### 快速启动
 ```bash
-cd ~/multi-agent-realtime
+pip install websockets
 python backend/server.py
 # 打开 frontend/index.html
 ```
-
-## 最后更新
-2026-06-05 - 初始版本完成，代码推送到 GitHub
