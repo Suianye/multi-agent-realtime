@@ -54,9 +54,62 @@ def test_get_position(root):
     assert window.get_position() == (50, 75)
 
 
+def test_pet_window_drag_move(root):
+    """测试拖拽移动"""
+    window = PetWindow(root)
+    window.set_position(0, 0)
+
+    # 模拟拖拽开始
+    event_start = type('Event', (), {'x': 10, 'y': 10})()
+    window._on_drag_start(event_start)
+
+    # 模拟拖拽移动
+    event_move = type('Event', (), {'x': 15, 'y': 10})()
+    window._on_drag_move(event_move)
+
+    # 验证位置更新
+    assert window.x == 5
+    assert window.y == 0
+
+    # 再次移动
+    event_move2 = type('Event', (), {'x': 20, 'y': 10})()
+    window._on_drag_move(event_move2)
+
+    # 验证位置正确累加（不应该有累积偏移）
+    assert window.x == 10
+    assert window.y == 0
+
+
 def test_get_canvas(root):
     """测试获取 Canvas"""
     window = PetWindow(root)
     canvas = window.get_canvas()
     assert canvas is not None
     assert isinstance(canvas, tk.Canvas)
+
+
+def test_show_hide_bubble(root):
+    """测试气泡显示和隐藏"""
+    window = PetWindow(root)
+    window.show_bubble("测试消息")
+    assert window.bubble_visible == True
+    window.hide_bubble()
+    assert window.bubble_visible == False
+
+
+def test_destroy_window(root):
+    """测试窗口销毁"""
+    window = PetWindow(root)
+    assert not window.is_destroyed()
+    window.destroy()
+    assert window.is_destroyed()
+
+
+def test_operations_after_destroy(root):
+    """测试销毁后的操作"""
+    window = PetWindow(root)
+    window.destroy()
+    # 销毁后调用方法不应抛出异常
+    window.set_position(100, 100)
+    window.show_bubble("test")
+    window.hide_bubble()

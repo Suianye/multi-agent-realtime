@@ -288,6 +288,13 @@ class PuppyDesktopPet:
                 pass
             self._update_timer_id = None
 
+        # 清理小黑狗
+        if self.puppy:
+            try:
+                self.puppy.destroy()
+            except Exception as e:
+                logger.debug(f"清理小黑狗异常: {e}")
+
         # 清理事件路由器
         if self.event_router:
             try:
