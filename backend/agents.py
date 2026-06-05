@@ -223,6 +223,17 @@ def get_hermes_python():
     return _HERMES_PYTHON
 
 
+@dataclass
+class CLIResult:
+    """CLI 执行结果，包含诊断信息"""
+    output: str
+    return_code: int = 0
+    elapsed: float = 0.0
+    last_output_time: float = 0.0
+    total_bytes: int = 0
+    stall_seconds: float = 0.0  # 最后一次输出距结束的秒数
+    diagnosis: str = ""  # 超时诊断
+
 class BaseAgent:
     """代理基类 - 提供通用的 CLI 执行和事件广播功能"""
 
@@ -286,7 +297,8 @@ class BaseAgent:
 
     async def _run_cli(self, cmd_list: List[str], timeout: int = 180, stdin_data: Optional[str] = None) -> str:
         """
-        执行CLI命令。prompt 应通过 stdin_data 传递，不要放在 cmd_list 中。
+        执行CLI命令（流式读取 + 心跳追踪）。
+        prompt 应通过 stdin_data 传递，不要放在 cmd_list 中。
 
         Args:
             cmd_list: 命令行参数列表（不含 prompt，prompt 通过 stdin_data 传递）
@@ -294,7 +306,7 @@ class BaseAgent:
             stdin_data: 通过 stdin 传递的数据（推荐用于传递 prompt）
 
         Returns:
-            命令输出字符串，或以 [错误]/[超时] 开头的错误信息
+            命令输出字符串，或以 [错误]/[超时]/[卡死] 开头的错误信息
         """
         # 参数验证
         if not cmd_list:
@@ -317,9 +329,16 @@ class BaseAgent:
         cli_env["ANTHROPIC_API_KEY"] = "tp-cokkpw3n577bqyhvvgq3ktnka5mdmfi8pbywrcnifr7embpg"
         cli_env["ANTHROPIC_BASE_URL"] = "https://token-plan-cn.xiaomimimo.com/anthropic"
 
+        # 诊断追踪
+        start_time = time.time()
+        last_output_time = start_time
+        total_bytes = 0
+        stdout_buf = []
+        stderr_buf = []
+        self._current_proc = None  # 暴露进程给监控器
+
         try:
             if sys.platform == "win32":
-                # Windows: 用双引号安全拼接，避免 shlex.quote 的单引号问题
                 cmd_str = " ".join(self._win_quote(str(c)) for c in cmd_list)
                 logger.debug("Windows shell 命令: %s", cmd_str[:200])
                 proc = await asyncio.create_subprocess_shell(
@@ -338,28 +357,93 @@ class BaseAgent:
                     env=cli_env,
                 )
 
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=stdin_data.encode("utf-8") if stdin_data else None),
-                timeout=timeout
-            )
-            result = stdout.decode("utf-8", errors="replace").strip()
-            err = stderr.decode("utf-8", errors="replace").strip()
+            self._current_proc = proc
+
+            # 写入 stdin
+            if stdin_data:
+                proc.stdin.write(stdin_data.encode("utf-8"))
+                await proc.stdin.drain()
+                proc.stdin.close()
+
+            # 流式读取 stdout，每 10 秒检查一次心跳
+            HEARTBEAT_INTERVAL = 10
+            STALL_THRESHOLD = 90  # 连续 90 秒无输出判定卡死
+
+            async def read_stream(stream, buf):
+                nonlocal last_output_time, total_bytes
+                while True:
+                    chunk = await stream.read(4096)
+                    if not chunk:
+                        break
+                    buf.append(chunk)
+                    last_output_time = time.time()
+                    total_bytes += len(chunk)
+
+            # 并行读取 stdout 和 stderr，带超时
+            try:
+                stdout_task = asyncio.create_task(read_stream(proc.stdout, stdout_buf))
+                stderr_task = asyncio.create_task(read_stream(proc.stderr, stderr_buf))
+
+                # 等待进程完成，但定期检查心跳
+                while proc.returncode is None:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=HEARTBEAT_INTERVAL)
+                        break  # 进程正常退出
+                    except asyncio.TimeoutError:
+                        # 进程还在跑，检查是否卡死
+                        stall = time.time() - last_output_time
+                        if stall > STALL_THRESHOLD:
+                            elapsed = time.time() - start_time
+                            diag = "卡死: 连续 {:.0f} 秒无输出 (总耗时 {:.0f}s, 已收 {} bytes)".format(
+                                stall, elapsed, total_bytes)
+                            logger.warning("CLI 卡死检测: %s - %s", cmd_list[0], diag)
+                            # 杀进程
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                            # 等待流读取完成
+                            await asyncio.sleep(0.5)
+                            stdout_task.cancel()
+                            stderr_task.cancel()
+                            # 组装诊断信息
+                            result = b"".join(stdout_buf).decode("utf-8", errors="replace").strip()
+                            self._last_cli_diagnosis = diag
+                            return "[卡死] {}".format(diag)
+
+                # 进程已退出，等待流读取完成
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                    timeout=10
+                )
+
+            except asyncio.TimeoutError:
+                elapsed = time.time() - start_time
+                diag = "超时: {:.0f} 秒 (已收 {} bytes, 最后输出 {:.0f}s 前)".format(
+                    elapsed, total_bytes, elapsed - (last_output_time - start_time))
+                logger.warning("CLI 超时: %s - %s", cmd_list[0], diag)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                stdout_task.cancel()
+                stderr_task.cancel()
+                self._last_cli_diagnosis = diag
+                return "[超时] {}".format(diag)
+
+            result = b"".join(stdout_buf).decode("utf-8", errors="replace").strip()
+            err = b"".join(stderr_buf).decode("utf-8", errors="replace").strip()
 
             # 某些工具输出到 stderr
             if not result and err:
                 if not any(skip in err.lower() for skip in ["warning", "deprecat", "notice"]):
                     result = err
 
-            logger.debug("CLI 执行完成: %s (输出长度: %d)", cmd_list[0], len(result))
+            elapsed = time.time() - start_time
+            stall = elapsed - (last_output_time - start_time)
+            self._last_cli_diagnosis = ""
+            logger.debug("CLI 完成: %s (%.1fs, %d bytes)", cmd_list[0], elapsed, total_bytes)
             return result
-
-        except asyncio.TimeoutError:
-            logger.warning("CLI 超时: %s (超过 %ds)", cmd_list[0], timeout)
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            return "[超时] 执行超过 {} 秒".format(timeout)
 
         except FileNotFoundError:
             logger.error("CLI 工具未找到: %s", cmd_list[0])
@@ -374,6 +458,7 @@ class BaseAgent:
             return "[错误] {}".format(str(e))
 
         finally:
+            self._current_proc = None
             self.status = "idle"
             await self.emit("agent_status", {"status": "idle"})
 

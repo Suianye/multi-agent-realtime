@@ -22,6 +22,17 @@ body{font-family:'Microsoft YaHei','Segoe UI',sans-serif;background:var(--bg);mi
   .btn-warning{background:#ff9800;color:#fff;border:none;border-radius:8px;padding:8px 20px;cursor:pointer;font-size:14px}
   .btn-warning:hover{background:#f57c00}
   .btn-warning:disabled{opacity:0.5;cursor:not-allowed}
+  .diagnosis-panel{background:rgba(244,67,54,0.08);border:1px solid rgba(244,67,54,0.3);border-radius:12px;padding:16px;margin-bottom:16px;display:none}
+  .diagnosis-panel h2{margin:0 0 12px;font-size:16px;color:#f44336}
+  .diagnosis-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .diagnosis-item{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px}
+  .diagnosis-item .label{font-size:11px;color:#999;text-transform:uppercase}
+  .diagnosis-item .value{font-size:14px;color:#fff;margin-top:2px}
+  .diagnosis-item .value.stuck{color:#f44336}
+  .diagnosis-item .value.slow{color:#ff9800}
+  .diagnosis-item .value.deadlock{color:#9c27b0}
+  .diagnosis-suggestion{margin-top:12px;padding:12px;background:rgba(33,150,243,0.1);border-radius:8px;border-left:3px solid #2196f3}
+  .diagnosis-suggestion .icon{font-size:20px;margin-right:8px}
   .project-input{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px}
 .project-input h2{font-size:1em;color:var(--accent);margin-bottom:10px}
 .input-row{display:flex;gap:8px;flex-wrap:wrap}
@@ -127,6 +138,40 @@ body{font-family:'Microsoft YaHei','Segoe UI',sans-serif;background:var(--bg);mi
     </div>
   </div>
 
+  <div class="diagnosis-panel" id="diagnosisPanel">
+    <h2>🔍 超时诊断报告</h2>
+    <div class="diagnosis-grid">
+      <div class="diagnosis-item">
+        <div class="label">超时原因</div>
+        <div class="value" id="diag-reason">-</div>
+      </div>
+      <div class="diagnosis-item">
+        <div class="label">卡住任务</div>
+        <div class="value" id="diag-task">-</div>
+      </div>
+      <div class="diagnosis-item">
+        <div class="label">执行耗时</div>
+        <div class="value" id="diag-elapsed">-</div>
+      </div>
+      <div class="diagnosis-item">
+        <div class="label">停滞时间</div>
+        <div class="value" id="diag-stall">-</div>
+      </div>
+      <div class="diagnosis-item">
+        <div class="label">代理</div>
+        <div class="value" id="diag-agent">-</div>
+      </div>
+      <div class="diagnosis-item">
+        <div class="label">已接收数据</div>
+        <div class="value" id="diag-bytes">-</div>
+      </div>
+    </div>
+    <div class="diagnosis-suggestion" id="diag-suggestion">
+      <span class="icon">💡</span>
+      <span id="diag-suggestion-text">-</span>
+    </div>
+  </div>
+
   <div class="grid">
     <div class="agents-panel">
       <div class="agent-card" id="card-hermes">
@@ -203,7 +248,8 @@ function handleMessage(d){
   switch(d.type){
     case'agent_status':updateAgent(d);break;
     case'log':addLog(d.source,d.target,d.message);break;
-    case'phase_change':
+    case'timeout_diagnosis':showDiagnosis(d.diagnosis);break;
+        case'phase_change':
   setPhase(d.phase,d.message);
   if(d.phase==='done'){
     document.getElementById('revisionArea').style.display='';
@@ -303,6 +349,22 @@ function startProject(){
   document.getElementById('resultsArea').innerHTML='<div class="empty"><div class="empty-icon">⏳</div>等待执行结果...</div>';
   ws.send(JSON.stringify({type:'start_project',name:name||req.substring(0,30),requirement:req}));
   addLog('用户','系统','提交需求: '+req.substring(0,50));
+}
+
+function showDiagnosis(diag){
+  const panel=document.getElementById('diagnosisPanel');
+  panel.style.display='';
+  const reasonMap={stuck:'🔴 进程卡死',slow:'🟡 执行缓慢',deadlock:'🟣 依赖死锁',network:'🟠 网络问题',unknown:'⚪ 未知原因'};
+  const sugMap={retry:'建议: 重试当前任务，可能是临时卡顿',split:'建议: 拆分复杂任务为更小的子任务',skip:'建议: 跳过该任务继续执行其他任务',abort:'建议: 终止项目，检查依赖关系'};
+  document.getElementById('diag-reason').textContent=reasonMap[diag.reason]||diag.reason;
+  document.getElementById('diag-reason').className='value '+diag.reason;
+  document.getElementById('diag-task').textContent=diag.task_title||'无';
+  document.getElementById('diag-elapsed').textContent=diag.elapsed?diag.elapsed+'s':'-';
+  document.getElementById('diag-stall').textContent=diag.stall_seconds?diag.stall_seconds+'s':'-';
+  document.getElementById('diag-agent').textContent=diag.agent_id||'-';
+  document.getElementById('diag-bytes').textContent=diag.bytes_received?Math.round(diag.bytes_received/1024)+'KB':'-';
+  document.getElementById('diag-suggestion-text').textContent=sugMap[diag.suggestion]||diag.suggestion;
+  addLog('诊断系统','超时分析','原因: '+(reasonMap[diag.reason]||diag.reason)+' | '+diag.cli_diagnosis);
 }
 
 function submitRevision(){

@@ -367,14 +367,25 @@ class StudioServer:
             logger.error("项目超时 [%s]: %s", name, str(e))
             await self.broadcast({
                 "type": "log",
-                "source": "系统",
-                "target": "超时",
+                "source": "诊断系统",
+                "target": "超时分析",
                 "message": "项目执行超时: {}".format(str(e)[:200])
             })
+            # 获取未完成任务摘要
+            proj = self.dispatcher.get_project_by_name(name)
+            if proj:
+                pending = [st for st in proj.subtasks if st.status == "failed" and "超时" in (st.error or "")]
+                for st in pending:
+                    await self.broadcast({
+                        "type": "log",
+                        "source": "诊断系统",
+                        "target": "任务分析",
+                        "message": "任务 [{}] {}: {}".format(st.id, st.title, st.error or "未知原因")
+                    })
             await self.broadcast({
                 "type": "phase_change",
                 "phase": "error",
-                "message": "项目执行超时"
+                "message": "项目超时 - 已生成诊断报告"
             })
         except DispatcherError as e:
             logger.error("项目调度错误 [%s]: %s", name, str(e))

@@ -2,12 +2,20 @@
 小黑狗绘制模块 v3
 使用 Canvas 绘制小黑狗各个部件
 增强：腮红、眼睛高光动画、更精致的耳朵和爪子
+
+增强功能:
+    1. Canvas 状态安全检查
+    2. 坐标边界验证
+    3. 绘制异常隔离
+    4. 资源清理保护
+    5. 性能优化（减少不必要的重绘）
 """
 import tkinter as tk
 from typing import Dict, List, Optional, Tuple
 from animations import AnimationManager, PuppyState
 from config import (COLOR_BLACK, COLOR_WHITE, COLOR_PINK, COLOR_DARK_GRAY,
-                    COLOR_BROWN, COLOR_NOSE_PINK, CANVAS_WIDTH, CANVAS_HEIGHT)
+                    COLOR_BROWN, COLOR_NOSE_PINK, CANVAS_WIDTH, CANVAS_HEIGHT,
+                    clamp_value)
 from logger import get_logger, log_exception
 
 # 模块日志记录器
@@ -121,18 +129,55 @@ class PuppyDrawer:
             坐标是否合理
         """
         # 基本有效性检查
+        try:
+            cx = int(cx)
+            cy = int(cy)
+            width = int(width)
+            height = int(height)
+        except (ValueError, TypeError):
+            logger.debug(f"部件 '{part_name}' 坐标类型错误")
+            return False
+
         if width <= 0 or height <= 0:
             logger.debug(f"部件 '{part_name}' 尺寸无效: {width}x{height}")
             return False
 
         # 检查是否在可见区域附近（允许一定超出）
-        margin = 100
+        margin = 150
         if (cx < -margin or cx > CANVAS_WIDTH + margin or
             cy < -margin or cy > CANVAS_HEIGHT + margin):
             logger.debug(f"部件 '{part_name}' 超出可见区域: ({cx}, {cy})")
             return False
 
+        # 检查坐标是否为 NaN 或无穷大
+        if cx != cx or cy != cy:
+            logger.debug(f"部件 '{part_name}' 坐标为 NaN")
+            return False
+
         return True
+
+    def _safe_coords(self, cx: int, cy: int, width: int, height: int) -> Tuple[int, int, int, int]:
+        """安全的坐标转换（自动限制在合理范围）
+
+        Args:
+            cx: 中心 x 坐标
+            cy: 中心 y 坐标
+            width: 宽度
+            height: 高度
+
+        Returns:
+            修正后的 (cx, cy, width, height)
+        """
+        try:
+            cx = int(clamp_value(cx, -200, CANVAS_WIDTH + 200))
+            cy = int(clamp_value(cy, -200, CANVAS_HEIGHT + 200))
+            width = int(clamp_value(width, 1, 500))
+            height = int(clamp_value(height, 1, 500))
+        except Exception:
+            cx, cy = CANVAS_WIDTH // 2, 70
+            width, height = 44, 34
+
+        return cx, cy, width, height
 
     def _draw_frame(self, frame: Dict) -> None:
         """绘制单帧
@@ -230,6 +275,9 @@ class PuppyDrawer:
             width: 宽度
             height: 高度
         """
+        # 安全坐标转换
+        cx, cy, width, height = self._safe_coords(cx, cy, width, height)
+
         if not self._validate_part_coords(cx, cy, width, height, "body"):
             return
 
@@ -242,7 +290,7 @@ class PuppyDrawer:
                 fill=COLOR_BLACK, outline=COLOR_DARK_GRAY, width=1,
             )
             # 肚子（浅色区域）
-            belly_h = height * 0.4
+            belly_h = int(height * 0.4)
             self._safe_create_item(
                 self.canvas.create_oval,
                 cx - width // 3, cy - belly_h // 2,
@@ -269,6 +317,9 @@ class PuppyDrawer:
             height: 高度
             angle: 角度
         """
+        # 安全坐标转换
+        cx, cy, width, height = self._safe_coords(cx, cy, width, height)
+
         if not self._validate_part_coords(cx, cy, width, height, "head"):
             return
 

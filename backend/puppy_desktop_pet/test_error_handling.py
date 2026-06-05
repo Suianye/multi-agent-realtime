@@ -1,23 +1,45 @@
 """
 小黑狗桌宠错误处理与边界情况测试
 测试各种异常场景、输入验证和错误恢复
+
+增强测试:
+    1. 全局异常处理器测试
+    2. 资源监控器测试
+    3. 看门狗定时器测试
+    4. 输入消毒工具测试
+    5. 优雅关闭管理器测试
+    6. 安全执行器测试
 """
 import unittest
 import sys
 import os
+import time
+import threading
 
 # 确保可以导入项目模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from logger import get_logger, setup_logging, LogContext, log_exception, log_boundary_violation
+from logger import (
+    get_logger, setup_logging, LogContext, log_exception, log_boundary_violation,
+    sanitize_log_message, SensitiveFilter, JsonFormatter, log_performance,
+    get_performance_stats, performance_timer, LogManager, log_manager,
+)
 from config import (
     validate_config_value, validate_all_configs, validate_color,
     validate_position, ConfigValidationError, CONFIG_RANGES,
     CANVAS_WIDTH, CANVAS_HEIGHT,
+    validate_timeout, validate_speed, validate_probability,
+    get_safe_screen_position, is_valid_hex_color, clamp_value,
 )
 from animations import (
     PuppyState, AnimationManager, validate_frame_part, validate_frame,
     get_safe_frame, ANIMATION_FRAMES, _DEFAULT_FRAME,
+)
+from error_recovery import (
+    GlobalExceptionHandler, ResourceMonitor, WatchdogTimer,
+    InputSanitizer, GracefulShutdown, safe_execute, retry_on_failure,
+    initialize_error_recovery, shutdown_error_recovery,
+    register_cleanup_task, feed_watchdog, get_error_recovery_status,
 )
 
 
@@ -757,6 +779,465 @@ class TestMainModule(unittest.TestCase):
         from main import PuppyDesktopPet, main
         self.assertIsNotNone(PuppyDesktopPet)
         self.assertIsNotNone(main)
+
+
+class TestInputSanitizer(unittest.TestCase):
+    """测试输入消毒工具"""
+
+    def test_sanitize_string_normal(self):
+        """测试正常字符串消毒"""
+        result = InputSanitizer.sanitize_string("Hello World")
+        self.assertEqual(result, "Hello World")
+
+    def test_sanitize_string_none(self):
+        """测试 None 输入"""
+        result = InputSanitizer.sanitize_string(None)
+        self.assertIsNone(result)
+
+    def test_sanitize_string_empty(self):
+        """测试空字符串"""
+        result = InputSanitizer.sanitize_string("")
+        self.assertIsNone(result)
+
+    def test_sanitize_string_empty_allowed(self):
+        """测试允许空字符串"""
+        result = InputSanitizer.sanitize_string("", allow_empty=True)
+        self.assertEqual(result, "")
+
+    def test_sanitize_string_too_long(self):
+        """测试过长字符串"""
+        long_string = "a" * 2000
+        result = InputSanitizer.sanitize_string(long_string, max_length=100)
+        self.assertEqual(len(result), 100)
+
+    def test_sanitize_string_control_chars(self):
+        """测试控制字符过滤"""
+        # 包含控制字符的字符串
+        input_str = "Hello\x00\x01\x02World"
+        result = InputSanitizer.sanitize_string(input_str)
+        self.assertEqual(result, "HelloWorld")
+
+    def test_sanitize_string_preserves_newlines(self):
+        """测试保留换行符"""
+        input_str = "Line1\nLine2\rLine3\tTab"
+        result = InputSanitizer.sanitize_string(input_str)
+        self.assertIn("\n", result)
+        self.assertIn("\r", result)
+        self.assertIn("\t", result)
+
+    def test_sanitize_integer_normal(self):
+        """测试正常整数消毒"""
+        result = InputSanitizer.sanitize_integer(42)
+        self.assertEqual(result, 42)
+
+    def test_sanitize_integer_string(self):
+        """测试字符串转整数"""
+        result = InputSanitizer.sanitize_integer("123")
+        self.assertEqual(result, 123)
+
+    def test_sanitize_integer_invalid(self):
+        """测试无效输入"""
+        result = InputSanitizer.sanitize_integer("abc", default=0)
+        self.assertEqual(result, 0)
+
+    def test_sanitize_integer_none(self):
+        """测试 None 输入"""
+        result = InputSanitizer.sanitize_integer(None, default=10)
+        self.assertEqual(result, 10)
+
+    def test_sanitize_integer_range(self):
+        """测试范围限制"""
+        result = InputSanitizer.sanitize_integer(100, min_val=0, max_val=50, default=25)
+        self.assertEqual(result, 50)
+
+    def test_sanitize_float_normal(self):
+        """测试正常浮点数消毒"""
+        result = InputSanitizer.sanitize_float(3.14)
+        self.assertAlmostEqual(result, 3.14)
+
+    def test_sanitize_float_nan(self):
+        """测试 NaN 处理"""
+        result = InputSanitizer.sanitize_float(float('nan'), default=0.0)
+        self.assertEqual(result, 0.0)
+
+    def test_sanitize_float_inf(self):
+        """测试无穷大处理"""
+        result = InputSanitizer.sanitize_float(float('inf'), default=0.0)
+        self.assertEqual(result, 0.0)
+
+    def test_sanitize_color_valid(self):
+        """测试有效颜色"""
+        result = InputSanitizer.sanitize_color("#FF0000")
+        self.assertEqual(result, "#FF0000")
+
+    def test_sanitize_color_invalid(self):
+        """测试无效颜色"""
+        result = InputSanitizer.sanitize_color("red", default="#000000")
+        self.assertEqual(result, "#000000")
+
+    def test_sanitize_coordinate_normal(self):
+        """测试正常坐标"""
+        result = InputSanitizer.sanitize_coordinate(100)
+        self.assertEqual(result, 100)
+
+    def test_sanitize_coordinate_out_of_range(self):
+        """测试超出范围坐标"""
+        result = InputSanitizer.sanitize_coordinate(50000, min_val=-1000, max_val=1000)
+        self.assertEqual(result, 1000)
+
+
+class TestSafeExecute(unittest.TestCase):
+    """测试安全执行器"""
+
+    def test_safe_execute_success(self):
+        """测试成功执行"""
+        result = safe_execute(lambda: 42)
+        self.assertEqual(result, 42)
+
+    def test_safe_execute_failure(self):
+        """测试失败执行"""
+        def failing_func():
+            raise ValueError("Test error")
+
+        result = safe_execute(failing_func, default="fallback")
+        self.assertEqual(result, "fallback")
+
+    def test_safe_execute_with_args(self):
+        """测试带参数执行"""
+        def add(a, b):
+            return a + b
+
+        result = safe_execute(add, 1, 2)
+        self.assertEqual(result, 3)
+
+    def test_safe_execute_no_log(self):
+        """测试不记录错误"""
+        def failing_func():
+            raise ValueError("Test error")
+
+        # 不应抛出异常
+        result = safe_execute(failing_func, default=None, log_errors=False)
+        self.assertIsNone(result)
+
+
+class TestRetryOnFailure(unittest.TestCase):
+    """测试重试机制"""
+
+    def test_retry_success_first_try(self):
+        """测试首次成功"""
+        call_count = 0
+
+        def success_func():
+            nonlocal call_count
+            call_count += 1
+            return "success"
+
+        result = retry_on_failure(success_func, max_retries=3)
+        self.assertEqual(result, "success")
+        self.assertEqual(call_count, 1)
+
+    def test_retry_success_after_failures(self):
+        """测试失败后成功"""
+        call_count = 0
+
+        def flaky_func():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ValueError("Not yet")
+            return "success"
+
+        result = retry_on_failure(flaky_func, max_retries=3, delay=0.01)
+        self.assertEqual(result, "success")
+        self.assertEqual(call_count, 3)
+
+    def test_retry_all_failures(self):
+        """测试全部失败"""
+        def failing_func():
+            raise ValueError("Always fail")
+
+        with self.assertRaises(ValueError):
+            retry_on_failure(failing_func, max_retries=2, delay=0.01)
+
+
+class TestLogSanitization(unittest.TestCase):
+    """测试日志消毒"""
+
+    def test_sanitize_password(self):
+        """测试密码过滤"""
+        message = "password=secret123"
+        result = sanitize_log_message(message)
+        self.assertNotIn("secret123", result)
+        self.assertIn("***", result)
+
+    def test_sanitize_token(self):
+        """测试 token 过滤"""
+        message = "token:abc123xyz"
+        result = sanitize_log_message(message)
+        self.assertNotIn("abc123xyz", result)
+
+    def test_sanitize_api_key(self):
+        """测试 API key 过滤"""
+        message = "api_key=sk-1234567890"
+        result = sanitize_log_message(message)
+        self.assertNotIn("sk-1234567890", result)
+
+    def test_sanitize_credit_card(self):
+        """测试信用卡号过滤"""
+        message = "Card: 1234 5678 9012 3456"
+        result = sanitize_log_message(message)
+        self.assertNotIn("1234 5678 9012 3456", result)
+
+    def test_no_sensitive_info(self):
+        """测试无敏感信息"""
+        message = "Normal log message"
+        result = sanitize_log_message(message)
+        self.assertEqual(result, message)
+
+
+class TestPerformanceLogging(unittest.TestCase):
+    """测试性能日志"""
+
+    def test_log_performance(self):
+        """测试记录性能"""
+        logger = get_logger("perf_test")
+        # 不应抛出异常
+        log_performance(logger, "test_operation", 0.5)
+
+    def test_get_performance_stats(self):
+        """测试获取性能统计"""
+        logger = get_logger("stats_test")
+        log_performance(logger, "op1", 0.1)
+        log_performance(logger, "op2", 0.2)
+
+        stats = get_performance_stats()
+        self.assertIsInstance(stats, list)
+
+    def test_performance_timer_decorator(self):
+        """测试性能计时装饰器"""
+        logger = get_logger("timer_test")
+
+        @performance_timer(logger, "test_func")
+        def test_func():
+            time.sleep(0.01)
+            return 42
+
+        result = test_func()
+        self.assertEqual(result, 42)
+
+
+class TestConfigEnhancements(unittest.TestCase):
+    """测试配置增强功能"""
+
+    def test_validate_timeout_normal(self):
+        """测试正常超时值"""
+        result = validate_timeout(3000)
+        self.assertEqual(result, 3000)
+
+    def test_validate_timeout_too_low(self):
+        """测试过低超时值"""
+        result = validate_timeout(50, min_ms=100)
+        self.assertEqual(result, 100)
+
+    def test_validate_timeout_too_high(self):
+        """测试过高超时值"""
+        result = validate_timeout(100000, max_ms=60000)
+        self.assertEqual(result, 60000)
+
+    def test_validate_timeout_invalid(self):
+        """测试无效超时值"""
+        result = validate_timeout("abc", default_ms=3000)
+        self.assertEqual(result, 3000)
+
+    def test_validate_timeout_none(self):
+        """测试 None 超时值"""
+        result = validate_timeout(None, default_ms=3000)
+        self.assertEqual(result, 3000)
+
+    def test_validate_speed_normal(self):
+        """测试正常速度值"""
+        result = validate_speed(2.0)
+        self.assertAlmostEqual(result, 2.0)
+
+    def test_validate_speed_nan(self):
+        """测试 NaN 速度值"""
+        result = validate_speed(float('nan'), default=2.0)
+        self.assertEqual(result, 2.0)
+
+    def test_validate_speed_inf(self):
+        """测试无穷大速度值"""
+        result = validate_speed(float('inf'), default=2.0)
+        self.assertEqual(result, 2.0)
+
+    def test_validate_probability_normal(self):
+        """测试正常概率值"""
+        result = validate_probability(0.5)
+        self.assertAlmostEqual(result, 0.5)
+
+    def test_validate_probability_out_of_range(self):
+        """测试超出范围概率值"""
+        result = validate_probability(1.5)
+        self.assertAlmostEqual(result, 1.0)
+
+        result = validate_probability(-0.5)
+        self.assertAlmostEqual(result, 0.0)
+
+    def test_get_safe_screen_position_normal(self):
+        """测试正常屏幕位置"""
+        x, y = get_safe_screen_position(100, 200)
+        self.assertEqual(x, 100)
+        self.assertEqual(y, 200)
+
+    def test_get_safe_screen_position_negative(self):
+        """测试负数屏幕位置"""
+        x, y = get_safe_screen_position(-100, -200)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+
+    def test_is_valid_hex_color_valid(self):
+        """测试有效十六进制颜色"""
+        self.assertTrue(is_valid_hex_color("#FF0000"))
+        self.assertTrue(is_valid_hex_color("#abc"))
+
+    def test_is_valid_hex_color_invalid(self):
+        """测试无效十六进制颜色"""
+        self.assertFalse(is_valid_hex_color("red"))
+        self.assertFalse(is_valid_hex_color("#GGG"))
+        self.assertFalse(is_valid_hex_color("#FF"))
+        self.assertFalse(is_valid_hex_color(123))
+
+    def test_clamp_value_normal(self):
+        """测试正常值限制"""
+        result = clamp_value(5, 0, 10)
+        self.assertEqual(result, 5)
+
+    def test_clamp_value_below_min(self):
+        """测试低于最小值"""
+        result = clamp_value(-5, 0, 10)
+        self.assertEqual(result, 0)
+
+    def test_clamp_value_above_max(self):
+        """测试高于最大值"""
+        result = clamp_value(15, 0, 10)
+        self.assertEqual(result, 10)
+
+    def test_clamp_value_nan(self):
+        """测试 NaN 值"""
+        result = clamp_value(float('nan'), 0, 10)
+        self.assertEqual(result, 0)
+
+
+class TestGracefulShutdown(unittest.TestCase):
+    """测试优雅关闭管理器"""
+
+    def test_register_cleanup(self):
+        """测试注册清理任务"""
+        manager = GracefulShutdown(timeout=5.0)
+        cleanup_called = False
+
+        def cleanup():
+            nonlocal cleanup_called
+            cleanup_called = True
+
+        manager.register_cleanup("test", cleanup)
+        status = manager.get_status()
+        self.assertEqual(status["total_tasks"], 1)
+
+    def test_execute_shutdown(self):
+        """测试执行关闭"""
+        manager = GracefulShutdown(timeout=5.0)
+        results = []
+
+        def task1():
+            results.append("task1")
+
+        def task2():
+            results.append("task2")
+
+        manager.register_cleanup("task1", task1)
+        manager.register_cleanup("task2", task2)
+
+        success = manager.execute_shutdown()
+        self.assertTrue(success)
+        self.assertEqual(results, ["task1", "task2"])
+
+    def test_shutdown_with_failure(self):
+        """测试关闭时有任务失败"""
+        manager = GracefulShutdown(timeout=5.0)
+
+        def failing_task():
+            raise ValueError("Task failed")
+
+        def success_task():
+            pass
+
+        manager.register_cleanup("failing", failing_task)
+        manager.register_cleanup("success", success_task)
+
+        success = manager.execute_shutdown()
+        self.assertFalse(success)
+
+
+class TestWatchdogTimer(unittest.TestCase):
+    """测试看门狗定时器"""
+
+    def test_watchdog_feed(self):
+        """测试喂狗"""
+        watchdog = WatchdogTimer(timeout=1.0)
+        watchdog.start()
+
+        # 喂狗
+        watchdog.feed()
+        status = watchdog.get_status()
+        self.assertTrue(status["running"])
+        self.assertLess(status["elapsed"], 1.0)
+
+        watchdog.stop()
+
+    def test_watchdog_timeout_callback(self):
+        """测试超时回调"""
+        callback_called = threading.Event()
+
+        def on_timeout():
+            callback_called.set()
+
+        watchdog = WatchdogTimer(timeout=0.2)
+        watchdog.set_timeout_callback(on_timeout)
+        watchdog.start()
+
+        # 等待超时
+        callback_called.wait(timeout=2.0)
+
+        self.assertTrue(callback_called.is_set())
+        watchdog.stop()
+
+
+class TestResourceManager(unittest.TestCase):
+    """测试资源管理"""
+
+    def test_resource_monitor_start_stop(self):
+        """测试资源监控器启动停止"""
+        monitor = ResourceMonitor(check_interval=0.1)
+        monitor.start()
+        self.assertTrue(monitor._running)
+
+        time.sleep(0.2)
+
+        monitor.stop()
+        self.assertFalse(monitor._running)
+
+    def test_resource_monitor_status(self):
+        """测试资源监控器状态"""
+        monitor = ResourceMonitor(check_interval=0.1)
+        monitor.start()
+
+        time.sleep(0.3)
+
+        status = monitor.get_status()
+        self.assertIn("running", status)
+        self.assertIn("check_count", status)
+
+        monitor.stop()
 
 
 if __name__ == "__main__":

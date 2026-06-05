@@ -1,8 +1,16 @@
 """
 小黑狗桌宠配置模块
 集中管理所有配置常量，包含输入验证
+
+增强功能:
+    1. 配置值边界检查与自动修正
+    2. 颜色格式验证
+    3. 位置坐标验证（含屏幕边界）
+    4. 配置摘要与诊断
+    5. 环境感知的默认值
 """
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional, Union
+import os
 
 # ============================================================
 # 配置常量
@@ -250,3 +258,179 @@ def get_config_summary() -> Dict[str, Any]:
         if value is not None:
             summary[name] = value
     return summary
+
+
+def validate_timeout(timeout: Any, name: str = "timeout",
+                     min_ms: int = 100, max_ms: int = 60000,
+                     default_ms: int = 3000) -> int:
+    """验证超时值
+
+    Args:
+        timeout: 超时值（毫秒）
+        name: 参数名称（用于日志）
+        min_ms: 最小值
+        max_ms: 最大值
+        default_ms: 默认值
+
+    Returns:
+        有效的超时值
+    """
+    if timeout is None:
+        return default_ms
+
+    try:
+        timeout = int(timeout)
+    except (ValueError, TypeError):
+        return default_ms
+
+    if timeout < min_ms:
+        return min_ms
+    if timeout > max_ms:
+        return max_ms
+
+    return timeout
+
+
+def validate_speed(speed: Any, min_speed: float = 0.1,
+                   max_speed: float = 20.0, default: float = 2.0) -> float:
+    """验证速度值
+
+    Args:
+        speed: 速度值
+        min_speed: 最小速度
+        max_speed: 最大速度
+        default: 默认值
+
+    Returns:
+        有效的速度值
+    """
+    if speed is None:
+        return default
+
+    try:
+        speed = float(speed)
+    except (ValueError, TypeError):
+        return default
+
+    # 检查 NaN 和无穷大
+    if speed != speed or speed == float('inf') or speed == float('-inf'):
+        return default
+
+    if speed < min_speed:
+        return min_speed
+    if speed > max_speed:
+        return max_speed
+
+    return speed
+
+
+def validate_probability(prob: Any, default: float = 0.5) -> float:
+    """验证概率值
+
+    Args:
+        prob: 概率值（0.0 - 1.0）
+        default: 默认值
+
+    Returns:
+        有效的概率值
+    """
+    if prob is None:
+        return default
+
+    try:
+        prob = float(prob)
+    except (ValueError, TypeError):
+        return default
+
+    # 检查 NaN 和无穷大
+    if prob != prob or prob == float('inf') or prob == float('-inf'):
+        return default
+
+    return max(0.0, min(1.0, prob))
+
+
+def get_safe_screen_position(x: int, y: int, width: int = CANVAS_WIDTH,
+                              height: int = CANVAS_HEIGHT,
+                              margin: int = BOUNDARY_MARGIN) -> Tuple[int, int]:
+    """获取安全的屏幕位置（防止窗口超出屏幕）
+
+    Args:
+        x: 目标 x 坐标
+        y: 目标 y 坐标
+        width: 窗口宽度
+        height: 窗口高度
+        margin: 边距
+
+    Returns:
+        安全的 (x, y) 坐标
+    """
+    # 确保输入是整数
+    try:
+        x = int(x)
+        y = int(y)
+    except (ValueError, TypeError):
+        return (margin, margin)
+
+    # 获取屏幕尺寸（使用环境变量或默认值）
+    try:
+        # 尝试从环境变量获取
+        screen_w = int(os.environ.get('SCREEN_WIDTH', '1920'))
+        screen_h = int(os.environ.get('SCREEN_HEIGHT', '1080'))
+    except (ValueError, TypeError):
+        screen_w, screen_h = 1920, 1080
+
+    # 限制在屏幕范围内
+    x = max(margin, min(x, screen_w - width - margin))
+    y = max(margin, min(y, screen_h - height - margin))
+
+    return (x, y)
+
+
+def is_valid_hex_color(color: str) -> bool:
+    """检查是否为有效的十六进制颜色值
+
+    Args:
+        color: 颜色字符串
+
+    Returns:
+        是否有效
+    """
+    if not isinstance(color, str):
+        return False
+
+    if not color.startswith('#'):
+        return False
+
+    hex_part = color[1:]
+    if len(hex_part) not in (3, 6):
+        return False
+
+    try:
+        int(hex_part, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def clamp_value(value: Union[int, float], min_val: Union[int, float],
+                max_val: Union[int, float]) -> Union[int, float]:
+    """将值限制在范围内
+
+    Args:
+        value: 要限制的值
+        min_val: 最小值
+        max_val: 最大值
+
+    Returns:
+        限制后的值
+    """
+    try:
+        value = float(value)
+    except (ValueError, TypeError):
+        return min_val
+
+    # 检查 NaN
+    if value != value:
+        return min_val
+
+    return max(min_val, min(max_val, value))

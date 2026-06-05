@@ -57,7 +57,8 @@ def test_get_position(root):
 def test_pet_window_drag_move(root):
     """测试拖拽移动"""
     window = PetWindow(root)
-    window.set_position(0, 0)
+    # 使用安全起始位置（考虑边界保护 margin=15）
+    window.set_position(100, 100)
 
     # 模拟拖拽开始
     event_start = type('Event', (), {'x': 10, 'y': 10})()
@@ -67,17 +68,17 @@ def test_pet_window_drag_move(root):
     event_move = type('Event', (), {'x': 15, 'y': 10})()
     window._on_drag_move(event_move)
 
-    # 验证位置更新
-    assert window.x == 5
-    assert window.y == 0
+    # 验证位置更新（拖拽偏移 = 15-10=5）
+    assert window.x == 105
+    assert window.y == 100
 
     # 再次移动
     event_move2 = type('Event', (), {'x': 20, 'y': 10})()
     window._on_drag_move(event_move2)
 
     # 验证位置正确累加（不应该有累积偏移）
-    assert window.x == 10
-    assert window.y == 0
+    assert window.x == 110
+    assert window.y == 100
 
 
 def test_get_canvas(root):

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Callable, Set
 from agents import (
     BaseAgent, Project, SubTask, ReviewResult, create_agents,
@@ -14,6 +15,34 @@ from agents import (
 
 # 模块级日志记录器
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TimeoutDiagnosis:
+    """超时诊断结果"""
+    reason: str  # stuck | slow | deadlock | network | unknown
+    task_id: str = ""
+    task_title: str = ""
+    agent_id: str = ""
+    elapsed: float = 0.0
+    last_activity: float = 0.0
+    stall_seconds: float = 0.0
+    bytes_received: int = 0
+    cli_diagnosis: str = ""
+    suggestion: str = ""  # 建议动作: retry | split | skip | abort
+
+    def to_dict(self) -> dict:
+        return {
+            "reason": self.reason,
+            "task_id": self.task_id,
+            "task_title": self.task_title,
+            "agent_id": self.agent_id,
+            "elapsed": round(self.elapsed, 1),
+            "stall_seconds": round(self.stall_seconds, 1),
+            "bytes_received": self.bytes_received,
+            "cli_diagnosis": self.cli_diagnosis,
+            "suggestion": self.suggestion,
+        }
 
 # 项目执行全局超时 (秒)
 PROJECT_EXECUTION_TIMEOUT = 600
@@ -170,6 +199,13 @@ class StudioDispatcher:
             except Exception as e:
                 logger.error("广播消息失败: %s", str(e))
 
+    def get_project_by_name(self, name: str) -> Optional[Project]:
+        """按名称获取项目"""
+        for proj in self.projects.values():
+            if proj.name == name:
+                return proj
+        return None
+
     def get_project(self, project_id: str) -> Optional[Project]:
         """根据 ID 获取项目"""
         if not isinstance(project_id, str):
@@ -271,18 +307,26 @@ class StudioDispatcher:
             })
             try:
                 await asyncio.wait_for(
-                    self._execute_project(project),
+                    self._execute_project_with_heartbeat(project),
                     timeout=PROJECT_EXECUTION_TIMEOUT
                 )
             except asyncio.TimeoutError:
-                logger.error("项目执行超时: %s (超过 %ds)", name, PROJECT_EXECUTION_TIMEOUT)
+                # 收集诊断信息
+                diagnosis = self._diagnose_timeout(project)
+                logger.error("项目执行超时: %s - 原因: %s, 建议: %s",
+                            name, diagnosis.reason, diagnosis.suggestion)
                 # 将未完成的任务标记为失败
                 for st in project.subtasks:
                     if st.status not in ("done", "failed"):
                         st.status = "failed"
-                        st.error = "项目执行超时"
+                        st.error = "超时[{}]: {}".format(diagnosis.reason, diagnosis.suggestion)
+                # 广播诊断结果
+                await self.broadcast({
+                    "type": "timeout_diagnosis",
+                    "diagnosis": diagnosis.to_dict()
+                })
                 raise ProjectTimeoutError(
-                    "项目 '{}' 执行超时 ({}秒)".format(name, PROJECT_EXECUTION_TIMEOUT)
+                    "项目 '{}' 执行超时: {}".format(name, diagnosis.suggestion)
                 )
 
         except (CircularDependencyError, AgentNotAvailableError, ProjectTimeoutError) as e:
@@ -439,6 +483,135 @@ class StudioDispatcher:
                     logger.error("修订任务 '%s' 失败: %s", st.title, str(results[i])[:100])
                 elif st.status == "review" and st.needs_review:
                     await self._review_task(project, st)
+
+
+    async def _execute_project_with_heartbeat(self, project: Project):
+        """执行项目，带心跳监控"""
+        max_rounds = 10
+        consecutive_empty = 0
+        task_start_times = {}  # task_id -> start_time
+
+        for round_num in range(1, max_rounds + 1):
+            ready = self._get_ready(project)
+
+            if not ready:
+                pending = [st for st in project.subtasks if st.status not in ("done", "failed")]
+                if not pending:
+                    logger.info("所有任务已完成")
+                    break
+                consecutive_empty += 1
+                if consecutive_empty >= 3:
+                    logger.error("检测到可能的任务死锁，剩余 %d 个任务未完成", len(pending))
+                    for st in pending:
+                        st.status = "failed"
+                        st.error = "任务调度死锁"
+                    await self.broadcast({
+                        "type": "log",
+                        "source": "调度器",
+                        "target": "错误",
+                        "message": "检测到任务死锁，{} 个任务标记为失败".format(len(pending))
+                    })
+                    break
+                logger.debug("第 %d 轮: 无就绪任务，%d 个待处理", round_num, len(pending))
+                continue
+
+            consecutive_empty = 0
+            logger.info("第 %d 轮: 执行 %d 个就绪任务", round_num, len(ready))
+            await self.broadcast({
+                "type": "log",
+                "source": "调度器",
+                "target": "执行",
+                "message": "第 {} 轮: 执行 {} 个就绪任务".format(round_num, len(ready))
+            })
+
+            # 记录任务开始时间
+            for st in ready:
+                task_start_times[st.id] = time.time()
+
+            coros = [self._exec_one(project, st) for st in ready]
+            results = await asyncio.gather(*coros, return_exceptions=True)
+
+            for i, st in enumerate(ready):
+                if isinstance(results[i], Exception):
+                    st.status = "failed"
+                    st.error = str(results[i])
+                    elapsed = time.time() - task_start_times.get(st.id, time.time())
+                    logger.error("任务 '%s' 执行失败 (%.1fs): %s", st.title, elapsed, str(results[i])[:100])
+                    await self.broadcast({
+                        "type": "log",
+                        "source": "系统",
+                        "target": st.assigned_to,
+                        "message": "任务失败 ({}): {}".format(self._format_time(elapsed), str(results[i])[:100])
+                    })
+                elif st.status == "review" and st.needs_review:
+                    await self._review_task(project, st)
+
+    def _diagnose_timeout(self, project: Project) -> TimeoutDiagnosis:
+        """诊断项目超时原因"""
+        now = time.time()
+        pending_tasks = [st for st in project.subtasks if st.status not in ("done", "failed")]
+        done_tasks = [st for st in project.subtasks if st.status == "done"]
+
+        # 检查是否有卡死的代理
+        for agent_id, agent in self.agents.items():
+            if hasattr(agent, '_last_cli_diagnosis') and agent._last_cli_diagnosis:
+                if "卡死" in agent._last_cli_diagnosis:
+                    # 找到卡死代理正在执行的任务
+                    stuck_task = None
+                    for st in pending_tasks:
+                        if st.assigned_to == agent_id and st.status == "in_progress":
+                            stuck_task = st
+                            break
+                    return TimeoutDiagnosis(
+                        reason="stuck",
+                        task_id=stuck_task.id if stuck_task else "",
+                        task_title=stuck_task.title if stuck_task else "",
+                        agent_id=agent_id,
+                        elapsed=now - (stuck_task.started_at if stuck_task else now),
+                        cli_diagnosis=agent._last_cli_diagnosis,
+                        suggestion="retry"
+                    )
+
+        # 检查是否所有任务都在等依赖（死锁）
+        if pending_tasks and all(st.status == "pending" for st in pending_tasks):
+            return TimeoutDiagnosis(
+                reason="deadlock",
+                task_id=pending_tasks[0].id,
+                task_title=pending_tasks[0].title,
+                elapsed=0,
+                suggestion="abort"
+            )
+
+        # 检查是否有任务执行了很久
+        long_tasks = [st for st in pending_tasks if st.started_at and (now - st.started_at) > 120]
+        if long_tasks:
+            st = long_tasks[0]
+            return TimeoutDiagnosis(
+                reason="slow",
+                task_id=st.id,
+                task_title=st.title,
+                agent_id=st.assigned_to,
+                elapsed=now - st.started_at,
+                suggestion="split" if len(done_tasks) < len(pending_tasks) else "retry"
+            )
+
+        # 默认
+        return TimeoutDiagnosis(
+            reason="unknown",
+            task_id=pending_tasks[0].id if pending_tasks else "",
+            task_title=pending_tasks[0].title if pending_tasks else "",
+            elapsed=0,
+            suggestion="retry"
+        )
+
+    def _format_time(self, seconds: float) -> str:
+        """格式化时间"""
+        if seconds < 60:
+            return "{:.0f}s".format(seconds)
+        elif seconds < 3600:
+            return "{:.0f}m{:.0f}s".format(seconds // 60, seconds % 60)
+        else:
+            return "{:.1f}h".format(seconds / 3600)
 
 
     def _get_ready(self, project: Project) -> List[SubTask]:

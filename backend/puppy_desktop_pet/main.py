@@ -7,6 +7,7 @@
     2. 管理应用生命周期（启动、暂停、恢复、停止）
     3. 运行主循环，驱动状态更新和动画渲染
     4. 完整的错误处理和优雅退出
+    5. 集成错误恢复系统（全局异常捕获、资源监控、看门狗）
 """
 import sys
 import signal
@@ -23,7 +24,12 @@ from handlers import (
     ContextMenuHandler,
 )
 from config import WINDOW_TITLE, validate_all_configs, get_config_summary
-from logger import setup_logging, get_logger, log_exception
+from logger import setup_logging, get_logger, log_exception, log_performance, performance_timer
+from error_recovery import (
+    initialize_error_recovery, shutdown_error_recovery,
+    register_cleanup_task, feed_watchdog, get_error_recovery_status,
+    InputSanitizer,
+)
 
 # 初始化日志系统
 setup_logging(level="INFO", log_to_file=True, debug_mode=False)
@@ -37,6 +43,7 @@ class PuppyDesktopPet:
     1. 初始化所有模块
     2. 设置事件路由系统
     3. 管理应用生命周期
+    4. 集成错误恢复系统
 
     包含完整的错误处理和优雅退出机制。
     """
@@ -72,8 +79,24 @@ class PuppyDesktopPet:
         # 更新定时器 ID
         self._update_timer_id: Optional[str] = None
 
+        # 输入消毒器
+        self._sanitizer = InputSanitizer()
+
         try:
             logger.info("正在初始化小黑狗桌宠...")
+
+            # 初始化错误恢复系统
+            initialize_error_recovery(
+                log_dir="logs",
+                enable_resource_monitor=True,
+                enable_watchdog=True,
+                watchdog_timeout=15.0
+            )
+
+            # 注册清理任务
+            register_cleanup_task("pet_window", self._cleanup_pet_window)
+            register_cleanup_task("event_router", self._cleanup_event_router)
+            register_cleanup_task("puppy", self._cleanup_puppy)
 
             # 验证配置
             self._validate_config()
@@ -151,6 +174,30 @@ class PuppyDesktopPet:
         summary = get_config_summary()
         logger.debug(f"配置摘要: {summary}")
 
+    def _cleanup_pet_window(self) -> None:
+        """清理宠物窗口（用于注册到清理任务）"""
+        if self.pet_window:
+            try:
+                self.pet_window.destroy()
+            except Exception as e:
+                logger.debug(f"清理宠物窗口异常: {e}")
+
+    def _cleanup_event_router(self) -> None:
+        """清理事件路由器（用于注册到清理任务）"""
+        if self.event_router:
+            try:
+                self.event_router.destroy()
+            except Exception as e:
+                logger.debug(f"清理事件路由器异常: {e}")
+
+    def _cleanup_puppy(self) -> None:
+        """清理小黑狗（用于注册到清理任务）"""
+        if self.puppy:
+            try:
+                self.puppy.destroy()
+            except Exception as e:
+                logger.debug(f"清理小黑狗异常: {e}")
+
     def _setup_signal_handlers(self) -> None:
         """设置信号处理器（用于优雅退出）"""
         try:
@@ -174,17 +221,22 @@ class PuppyDesktopPet:
         logger.info("应用关闭回调触发")
         self._cleanup()
 
+    @performance_timer(logger, "update_cycle")
     def _update(self):
         """更新循环
 
         分离状态更新和动画更新：
         - 状态更新: 每 100ms 一次
         - 气泡消息: 每 3 秒检查一次状态变化
+        - 喂狗: 每次更新时重置看门狗
         """
         if not self.running or self._shutting_down:
             return
 
         try:
+            # 喂狗（告诉看门狗主循环正常运行）
+            feed_watchdog()
+
             # 更新小黑狗状态
             if self.puppy:
                 self.puppy.update()
@@ -199,7 +251,10 @@ class PuppyDesktopPet:
                         old_name = self._last_state.name if self._last_state else "N/A"
                         self._last_state = current_state
                         message = self.puppy.get_state_message()
-                        self.pet_window.show_bubble(message)
+                        # 消毒消息内容
+                        safe_message = self._sanitizer.sanitize_string(message, max_length=50)
+                        if safe_message:
+                            self.pet_window.show_bubble(safe_message)
                         logger.debug("状态变化气泡: %s -> %s", old_name, current_state.name)
 
             # 调度下一次更新
@@ -266,6 +321,9 @@ class PuppyDesktopPet:
                     self.root.destroy()
                 except tk.TclError:
                     pass
+
+            # 关闭错误恢复系统
+            shutdown_error_recovery()
 
             logger.info("小黑狗桌宠已停止")
             print("小黑狗桌宠已停止")
@@ -368,7 +426,7 @@ class PuppyDesktopPet:
             包含应用状态信息的字典
         """
         try:
-            return {
+            state = {
                 "running": self.running,
                 "initialized": self._initialized,
                 "shutting_down": self._shutting_down,
@@ -378,6 +436,14 @@ class PuppyDesktopPet:
                 "is_dragging": self.event_router.is_dragging() if self.event_router else False,
                 "event_stats": self.event_router.get_event_stats() if self.event_router else {},
             }
+
+            # 添加错误恢复系统状态
+            try:
+                state["error_recovery"] = get_error_recovery_status()
+            except Exception:
+                state["error_recovery"] = "unavailable"
+
+            return state
         except Exception as e:
             log_exception(logger, "获取应用状态异常", e)
             return {"error": str(e)}

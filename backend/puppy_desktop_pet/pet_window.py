@@ -2,12 +2,19 @@
 窗口管理模块
 管理透明窗口、拖拽移动和气泡消息
 包含完整的错误处理和边界验证
+
+增强功能:
+    1. 窗口生命周期安全检查
+    2. 拖拽边界保护（防飞出屏幕）
+    3. 气泡消息消毒
+    4. 位置验证与自动修正
+    5. 资源泄漏防护
 """
 import tkinter as tk
 from typing import Optional
 from config import (CANVAS_WIDTH, CANVAS_HEIGHT, WINDOW_TITLE,
                     BUBBLE_FONT, BUBBLE_BG, BUBBLE_FG, BUBBLE_DURATION,
-                    validate_position, validate_color)
+                    validate_position, validate_color, get_safe_screen_position)
 from logger import get_logger, log_exception
 
 # 模块日志记录器
@@ -212,10 +219,13 @@ class PetWindow:
             new_x = self.x + dx
             new_y = self.y + dy
 
-            # 边界检查：统一使用 validate_position
+            # 边界检查：使用安全位置函数
             screen_width = self.root.winfo_screenwidth()
             screen_height = self.root.winfo_screenheight()
+
+            # 使用双重验证确保安全
             new_x, new_y = validate_position(new_x, new_y, screen_width, screen_height)
+            new_x, new_y = get_safe_screen_position(new_x, new_y, self.width, self.height)
 
             self.x = new_x
             self.y = new_y
@@ -225,6 +235,9 @@ class PetWindow:
             self.drag_start_x = event.x
             self.drag_start_y = event.y
 
+        except tk.TclError as e:
+            logger.debug(f"拖拽移动 Tcl 错误: {e}")
+            self.dragging = False
         except Exception as e:
             log_exception(logger, "拖拽移动处理异常", e)
             self.dragging = False
@@ -254,13 +267,26 @@ class PetWindow:
         if not self._check_not_destroyed():
             return
 
-        # 输入验证
+        # 输入验证与消毒
         if not isinstance(message, str):
             logger.warning(f"气泡消息类型错误: {type(message)}，转换为字符串")
-            message = str(message)
+            try:
+                message = str(message)
+            except Exception:
+                logger.debug("消息转换失败，跳过显示")
+                return
+
+        if not message or not message.strip():
+            logger.debug("空消息，跳过显示")
+            return
+
+        # 消毒消息内容（移除控制字符）
+        message = ''.join(
+            char for char in message
+            if char in ('\n', '\r', '\t') or (ord(char) >= 32)
+        )
 
         if not message:
-            logger.debug("空消息，跳过显示")
             return
 
         # 验证持续时间
@@ -268,7 +294,7 @@ class PetWindow:
             logger.warning(f"气泡持续时间无效: {duration}，使用默认值")
             duration = BUBBLE_DURATION
 
-        duration = int(duration)
+        duration = int(max(500, min(30000, duration)))  # 限制在 0.5s - 30s
 
         try:
             # 取消之前的定时器
@@ -277,6 +303,9 @@ class PetWindow:
             # 截断过长的消息
             max_length = 50
             display_message = message[:max_length] + "..." if len(message) > max_length else message
+
+            # 转义特殊字符（防止 Tk 解析错误）
+            display_message = display_message.replace('{', '\\{').replace('}', '\\}')
 
             # 显示气泡（带阴影效果）
             self._bubble_shadow.config(text=display_message)
@@ -339,10 +368,11 @@ class PetWindow:
             logger.warning(f"位置参数类型错误: x={x}, y={y}, 错误: {e}")
             return
 
-        # 边界检查
+        # 边界检查（双重验证）
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         x, y = validate_position(x, y, screen_width, screen_height)
+        x, y = get_safe_screen_position(x, y, self.width, self.height)
 
         try:
             self.x = x
