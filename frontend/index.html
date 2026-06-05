@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多AI工具实时协作系统</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Microsoft YaHei','Segoe UI',sans-serif;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);min-height:100vh;color:#fff}
+.container{max-width:1500px;margin:0 auto;padding:15px}
+header{background:rgba(255,255,255,.08);backdrop-filter:blur(10px);padding:15px 20px;border-radius:14px;margin-bottom:15px;display:flex;align-items:center;gap:15px;border:1px solid rgba(255,255,255,.1);flex-wrap:wrap}
+h1{font-size:1.6em;background:linear-gradient(90deg,#00d2ff,#3a7bd5);-webkit-background-clip:text;-webkit-text-fill-color:transparent;white-space:nowrap}
+.ws-status{padding:4px 12px;border-radius:20px;font-size:.8em;font-weight:600}
+.ws-connected{background:#2ecc71;color:#fff}
+.ws-disconnected{background:#e74c3c;color:#fff}
+.controls{display:flex;gap:8px}
+.btn{padding:8px 18px;border:none;border-radius:8px;font-size:.9em;font-weight:600;cursor:pointer;transition:all .2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.btn-start{background:linear-gradient(90deg,#00d2ff,#3a7bd5);color:#fff}
+.btn-pause{background:#f39c12;color:#fff}
+.btn-stop{background:#e74c3c;color:#fff}
+.task-bar{background:rgba(255,255,255,.06);border-radius:12px;padding:12px 15px;margin-bottom:15px;display:flex;gap:10px;align-items:center;border:1px solid rgba(255,255,255,.1);flex-wrap:wrap}
+.task-bar input,.task-bar select{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:8px 12px;color:#fff;font-size:.9em}
+.task-bar input{flex:1;min-width:200px}
+.task-bar input::placeholder{color:rgba(255,255,255,.4)}
+.task-bar select{min-width:100px}
+.task-bar select option{background:#302b63;color:#fff}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.panel{background:rgba(255,255,255,.06);backdrop-filter:blur(10px);border-radius:14px;padding:15px;border:1px solid rgba(255,255,255,.1)}
+.panel-title{font-size:1.05em;color:#00d2ff;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid rgba(0,210,255,.2);display:flex;align-items:center;gap:8px}
+.full-width{grid-column:1/-1}
+.agent-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:700px){.agent-grid{grid-template-columns:repeat(2,1fr)}}
+.agent-card{background:rgba(255,255,255,.05);border-radius:12px;padding:15px;text-align:center;border:1px solid rgba(255,255,255,.08);transition:all .3s}
+.agent-card.working{border-color:#f39c12;box-shadow:0 0 20px rgba(243,156,18,.3);animation:pulse 1.5s infinite}
+.agent-card.error{border-color:#e74c3c;box-shadow:0 0 20px rgba(231,76,60,.3)}
+.agent-icon{font-size:2.2em;margin-bottom:8px}
+.agent-name{font-size:.95em;font-weight:700;margin-bottom:6px}
+.agent-status{font-size:.85em;display:flex;align-items:center;justify-content:center;gap:5px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.dot-idle{background:#2ecc71}
+.dot-working{background:#f39c12;animation:blink 1s infinite}
+.dot-error{background:#e74c3c}
+.agent-task{font-size:.75em;color:rgba(255,255,255,.5);margin-top:4px;min-height:1.2em}
+.task-list{max-height:200px;overflow-y:auto}
+.task-card{background:rgba(255,255,255,.05);border-radius:8px;padding:10px 12px;margin-bottom:8px;border-left:3px solid #00d2ff;animation:fadeIn .4s}
+.task-card h3{font-size:.9em;margin-bottom:3px}
+.task-card p{font-size:.75em;color:rgba(255,255,255,.5)}
+.task-card.done{border-left-color:#2ecc71;opacity:.7}
+.log-box{background:rgba(0,0,0,.25);border-radius:10px;padding:10px;max-height:350px;overflow-y:auto;font-family:'Consolas','Courier New',monospace;font-size:.8em}
+.log-entry{padding:5px 8px;margin-bottom:3px;border-radius:4px;background:rgba(255,255,255,.03);animation:slideIn .3s}
+.log-time{color:#3498db}
+.log-src{color:#2ecc71}
+.log-arrow{color:#666}
+.log-dst{color:#e74c3c}
+.log-msg{color:#f1c40f}
+.result-box{background:rgba(0,210,255,.05);border:1px solid rgba(0,210,255,.2);border-radius:8px;padding:10px;margin-top:8px;animation:fadeIn .4s}
+.result-box h4{color:#00d2ff;font-size:.85em;margin-bottom:5px}
+.result-box pre{font-size:.75em;color:rgba(255,255,255,.8);white-space:pre-wrap;word-break:break-all;max-height:150px;overflow-y:auto}
+footer{text-align:center;margin-top:15px;padding:10px;color:rgba(255,255,255,.3);font-size:.8em}
+@keyframes pulse{0%,100%{box-shadow:0 0 20px rgba(243,156,18,.3)}50%{box-shadow:0 0 35px rgba(243,156,18,.5)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+<h1>🤖 多AI工具实时协作系统</h1>
+<span class="ws-status ws-disconnected" id="wsStatus">未连接</span>
+<div class="controls">
+<button class="btn btn-start" onclick="startDemo()">▶ 演示</button>
+<button class="btn btn-stop" onclick="stopDemo()">⏹ 停止</button>
+</div>
+</header>
+
+<div class="task-bar">
+<input type="text" id="taskInput" placeholder="输入任务描述，例如：写一个Python快速排序函数">
+<select id="modeSelect">
+<option value="auto">🎯 自动选择</option>
+<option value="serial">📦 串行执行</option>
+<option value="parallel">⚡ 并行执行</option>
+<option value="compete">🏆 竞争模式</option>
+</select>
+<button class="btn btn-start" onclick="sendTask()">🚀 执行</button>
+</div>
+
+<div class="grid">
+<div class="panel full-width">
+<div class="panel-title">👥 代理状态</div>
+<div class="agent-grid">
+<div class="agent-card" id="card-claude-code">
+<div class="agent-icon">🤖</div>
+<div class="agent-name">Claude Code</div>
+<div class="agent-status"><span class="dot dot-idle" id="dot-claude-code"></span><span id="status-claude-code">空闲</span></div>
+<div class="agent-task" id="task-claude-code"></div>
+</div>
+<div class="agent-card" id="card-codex">
+<div class="agent-icon">⚡</div>
+<div class="agent-name">Codex</div>
+<div class="agent-status"><span class="dot dot-idle" id="dot-codex"></span><span id="status-codex">空闲</span></div>
+<div class="agent-task" id="task-codex"></div>
+</div>
+<div class="agent-card" id="card-openclaw">
+<div class="agent-icon">🔍</div>
+<div class="agent-name">OpenClaw</div>
+<div class="agent-status"><span class="dot dot-idle" id="dot-openclaw"></span><span id="status-openclaw">空闲</span></div>
+<div class="agent-task" id="task-openclaw"></div>
+</div>
+<div class="agent-card" id="card-hermes">
+<div class="agent-icon">🎯</div>
+<div class="agent-name">Hermes Agent</div>
+<div class="agent-status"><span class="dot dot-idle" id="dot-hermes"></span><span id="status-hermes">空闲</span></div>
+<div class="agent-task" id="task-hermes"></div>
+</div>
+</div>
+</div>
+
+<div class="panel">
+<div class="panel-title">📋 任务队列</div>
+<div class="task-list" id="taskList"></div>
+</div>
+
+<div class="panel">
+<div class="panel-title">📡 通信日志</div>
+<div class="log-box" id="logBox"></div>
+</div>
+
+<div class="panel full-width">
+<div class="panel-title">📊 执行结果</div>
+<div id="resultArea"></div>
+</div>
+</div>
+
+<footer>多AI工具实时协作系统 v2.0 | 真实调用 Claude Code · Codex · OpenClaw · Hermes</footer>
+</div>
+
+<script>
+let ws = null;
+let reconnectTimer = null;
+
+function connect() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    ws = new WebSocket('ws://localhost:8765');
+    ws.onopen = () => {
+        document.getElementById('wsStatus').textContent = '已连接';
+        document.getElementById('wsStatus').className = 'ws-status ws-connected';
+        addLog('🌐 系统', 'WebSocket', '连接成功');
+    };
+    ws.onclose = () => {
+        document.getElementById('wsStatus').textContent = '未连接';
+        document.getElementById('wsStatus').className = 'ws-status ws-disconnected';
+        reconnectTimer = setTimeout(connect, 3000);
+    };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        handleMessage(data);
+    };
+}
+
+function handleMessage(data) {
+    switch(data.type) {
+        case 'agent_status': updateAgent(data); break;
+        case 'log': addLog(data.source, data.target, data.message); break;
+        case 'task_result': showResult(data); break;
+    }
+}
+
+function updateAgent(data) {
+    const card = document.getElementById('card-' + data.agent);
+    const dot = document.getElementById('dot-' + data.agent);
+    const status = document.getElementById('status-' + data.agent);
+    const task = document.getElementById('task-' + data.agent);
+    if (!card) return;
+    card.className = 'agent-card' + (data.status === 'working' ? ' working' : data.status === 'error' ? ' error' : '');
+    dot.className = 'dot dot-' + data.status;
+    status.textContent = data.status === 'working' ? '工作中' : data.status === 'error' ? '错误' : '空闲';
+    task.textContent = data.task || '';
+}
+
+function addLog(src, dst, msg) {
+    const box = document.getElementById('logBox');
+    const now = new Date().toLocaleTimeString();
+    const div = document.createElement('div');
+    div.className = 'log-entry';
+    div.innerHTML = '<span class="log-time">['+now+']</span> <span class="log-src">'+src+'</span> <span class="log-arrow">→</span> <span class="log-dst">'+dst+'</span>: <span class="log-msg">'+msg+'</span>';
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+
+function showResult(data) {
+    const area = document.getElementById('resultArea');
+    const div = document.createElement('div');
+    div.className = 'result-box';
+    div.innerHTML = '<h4>' + data.agent + ' 的结果 (' + data.duration.toFixed(1) + 's)</h4><pre>' + escapeHtml(data.result) + '</pre>';
+    area.appendChild(div);
+}
+
+function escapeHtml(text) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+
+function sendTask() {
+    const input = document.getElementById('taskInput');
+    const mode = document.getElementById('modeSelect').value;
+    const prompt = input.value.trim();
+    if (!prompt) { input.focus(); return; }
+    if (!ws || ws.readyState !== WebSocket.OPEN) { addLog('❌ 错误', '系统', 'WebSocket未连接'); return; }
+    const taskName = prompt.length > 20 ? prompt.substring(0, 20) + '...' : prompt;
+    ws.send(JSON.stringify({ type: 'execute_task', task: { name: taskName, prompt: prompt, mode: mode } }));
+    addTaskCard(taskName, mode);
+    input.value = '';
+}
+
+function addTaskCard(name, mode) {
+    const list = document.getElementById('taskList');
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    card.innerHTML = '<h3>' + name + '</h3><p>模式: ' + mode + ' | ' + new Date().toLocaleTimeString() + '</p>';
+    list.appendChild(card);
+    list.scrollTop = list.scrollHeight;
+}
+
+function startDemo() {
+    document.getElementById('taskInput').value = '用Python写一个快速排序函数，包含注释和测试用例';
+    document.getElementById('modeSelect').value = 'auto';
+    sendTask();
+}
+
+function stopDemo() {
+    addLog('👤 用户', '🎯 系统', '停止执行');
+}
+
+document.getElementById('taskInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendTask();
+});
+
+connect();
+addLog('🎯 系统', '🌐 初始化', '多AI工具实时协作系统已启动');
+addLog('🎯 系统', '📋 提示', '输入任务描述，点击执行或按Enter');
+</script>
+</body>
+</html>
