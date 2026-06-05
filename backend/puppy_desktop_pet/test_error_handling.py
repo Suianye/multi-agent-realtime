@@ -494,6 +494,271 @@ class TestBoundaryConditions(unittest.TestCase):
         self.assertIn("eyes", _DEFAULT_FRAME)
 
 
+class TestPuppyEnhanced(unittest.TestCase):
+    """测试小黑狗增强功能"""
+
+    def _create_puppy(self):
+        """创建小黑狗实例（需要 tkinter）"""
+        import tkinter as tk
+        from puppy import Puppy
+        root = tk.Tk()
+        root.withdraw()
+        canvas = tk.Canvas(root, width=120, height=140)
+        canvas.pack()
+        puppy = Puppy(canvas)
+        return root, puppy
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_puppy_recover(self):
+        """测试错误恢复功能"""
+        root, puppy = self._create_puppy()
+        try:
+            # 设置异常状态
+            puppy.state = PuppyState.WALKING
+            puppy.x = -100
+            puppy.y = -100
+            puppy.direction = 0
+
+            puppy.recover()
+
+            self.assertEqual(puppy.state, PuppyState.IDLE)
+            self.assertEqual(puppy.x, 60)  # CANVAS_WIDTH // 2
+            self.assertEqual(puppy.y, 70)
+            self.assertEqual(puppy.direction, 1)
+            self.assertTrue(puppy.is_active())
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_puppy_get_debug_info(self):
+        """测试获取调试信息"""
+        root, puppy = self._create_puppy()
+        try:
+            info = puppy.get_debug_info()
+            self.assertIsInstance(info, dict)
+            self.assertIn("state", info)
+            self.assertIn("position", info)
+            self.assertIn("direction", info)
+            self.assertIn("is_active", info)
+            self.assertEqual(info["state"], "IDLE")
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_puppy_set_direction_invalid_values(self):
+        """测试设置无效方向值"""
+        root, puppy = self._create_puppy()
+        try:
+            # 无效值应修正为默认值
+            puppy.set_direction(0)
+            self.assertEqual(puppy.direction, 1)
+
+            puppy.set_direction(100)
+            self.assertEqual(puppy.direction, 1)
+
+            puppy.set_direction("right")
+            self.assertEqual(puppy.direction, 1)
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_puppy_set_state_invalid_type(self):
+        """测试设置无效类型状态"""
+        root, puppy = self._create_puppy()
+        try:
+            puppy.set_state("not_a_state")
+            self.assertEqual(puppy.state, PuppyState.IDLE)
+
+            puppy.set_state(None)
+            self.assertEqual(puppy.state, PuppyState.IDLE)
+
+            puppy.set_state(42)
+            self.assertEqual(puppy.state, PuppyState.IDLE)
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_puppy_active_inactive(self):
+        """测试激活/停用状态"""
+        root, puppy = self._create_puppy()
+        try:
+            self.assertTrue(puppy.is_active())
+
+            puppy.set_active(False)
+            self.assertFalse(puppy.is_active())
+
+            # 停用时更新不应执行
+            puppy.state_timer = 999999
+            old_timer = puppy.state_timer
+            puppy.update()
+            self.assertEqual(puppy.state_timer, old_timer)
+
+            puppy.set_active(True)
+            self.assertTrue(puppy.is_active())
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_puppy_reset(self):
+        """测试重置功能"""
+        root, puppy = self._create_puppy()
+        try:
+            puppy.state = PuppyState.WALKING
+            puppy.x = 100
+            puppy.y = 100
+            puppy.direction = -1
+            puppy.state_timer = 5000
+
+            puppy.reset()
+
+            self.assertEqual(puppy.state, PuppyState.IDLE)
+            self.assertEqual(puppy.x, 60)
+            self.assertEqual(puppy.y, 70)
+            self.assertEqual(puppy.direction, 1)
+            self.assertEqual(puppy.state_timer, 0)
+        finally:
+            root.destroy()
+
+
+class TestEventRouterEnhanced(unittest.TestCase):
+    """测试事件路由器增强功能"""
+
+    def _create_router(self):
+        """创建路由器实例"""
+        import tkinter as tk
+        from event_router import EventRouter
+        root = tk.Tk()
+        root.withdraw()
+        canvas = tk.Canvas(root, width=100, height=100)
+        canvas.pack()
+        router = EventRouter(canvas)
+        return root, canvas, router
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_router_destroy(self):
+        """测试销毁路由器"""
+        root, canvas, router = self._create_router()
+        try:
+            from event_router import EventType
+            handler = lambda e: None
+            router.on(EventType.CLICK, handler)
+
+            router.destroy()
+
+            self.assertTrue(router._destroyed)
+            self.assertEqual(len(router._handlers), 0)
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_router_double_destroy(self):
+        """测试重复销毁"""
+        root, canvas, router = self._create_router()
+        try:
+            router.destroy()
+            router.destroy()  # 不应抛出异常
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_router_operations_after_destroy(self):
+        """测试销毁后的操作"""
+        root, canvas, router = self._create_router()
+        try:
+            from event_router import EventType, Event
+            router.destroy()
+
+            # 销毁后的操作不应抛出异常
+            handler = lambda e: None
+            router.on(EventType.CLICK, handler)
+            # 不应注册成功
+            self.assertEqual(len(router._handlers.get(EventType.CLICK, [])), 0)
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_router_error_counting(self):
+        """测试错误计数"""
+        root, canvas, router = self._create_router()
+        try:
+            from event_router import EventType, Event
+
+            def bad_handler(event):
+                raise ValueError("Test error")
+
+            router.on(EventType.CLICK, bad_handler)
+
+            for _ in range(5):
+                event = Event(EventType.CLICK, x=50, y=50)
+                router._emit(event)
+
+            self.assertEqual(router.get_error_count(), 5)
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_router_reset_stats_includes_errors(self):
+        """测试重置统计包括错误计数"""
+        root, canvas, router = self._create_router()
+        try:
+            from event_router import EventType, Event
+
+            def bad_handler(event):
+                raise ValueError("Test error")
+
+            router.on(EventType.CLICK, bad_handler)
+
+            event = Event(EventType.CLICK, x=50, y=50)
+            router._emit(event)
+
+            self.assertGreater(router.get_error_count(), 0)
+
+            router.reset_stats()
+            self.assertEqual(router.get_error_count(), 0)
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_router_recursion_guard(self):
+        """测试递归保护"""
+        root, canvas, router = self._create_router()
+        try:
+            from event_router import EventType, Event
+
+            def recursive_handler(event):
+                new_event = Event(EventType.CLICK, x=0, y=0)
+                router._emit(new_event)
+
+            router.on(EventType.CLICK, recursive_handler)
+
+            event = Event(EventType.CLICK, x=50, y=50)
+            # 不应导致无限递归
+            router._emit(event)
+        finally:
+            root.destroy()
+
+    @unittest.skipUnless(_TK_AVAILABLE, "tkinter 不可用")
+    def test_router_init_invalid_canvas(self):
+        """测试无效 Canvas 初始化"""
+        from event_router import EventRouter
+        with self.assertRaises(TypeError):
+            EventRouter("not_a_canvas")
+
+        with self.assertRaises(TypeError):
+            EventRouter(None)
+
+
+class TestMainModule(unittest.TestCase):
+    """测试主模块错误处理"""
+
+    def test_main_import(self):
+        """测试主模块导入"""
+        # 不应抛出异常
+        from main import PuppyDesktopPet, main
+        self.assertIsNotNone(PuppyDesktopPet)
+        self.assertIsNotNone(main)
+
+
 if __name__ == "__main__":
     # 设置测试日志
     setup_logging(level="WARNING", log_to_file=False)

@@ -42,3 +42,32 @@ def test_pet_window_drag_end(root):
     window.dragging = True
     window._on_drag_end(None)
     assert window.dragging == False
+
+
+def test_pet_window_drag_move_no_accumulation(root):
+    """测试拖拽移动不会累积偏移（修复累积 bug）"""
+    window = PetWindow(root)
+    window.set_position(100, 200)
+
+    # 模拟拖拽开始
+    start_event = type('Event', (), {'x': 50, 'y': 50})()
+    window._on_drag_start(start_event)
+
+    # 模拟连续两次小幅移动
+    move1 = type('Event', (), {'x': 55, 'y': 55})()
+    window._on_drag_move(move1)
+    assert window.x == 105, f"Expected 105, got {window.x}"
+    assert window.y == 205, f"Expected 205, got {window.y}"
+
+    move2 = type('Event', (), {'x': 60, 'y': 60})()
+    window._on_drag_move(move2)
+    # 累积 bug 会导致 x=120, y=220；正确应为 x=110, y=210
+    assert window.x == 110, f"Expected 110, got {window.x} (accumulation bug!)"
+    assert window.y == 210, f"Expected 210, got {window.y} (accumulation bug!)"
+
+
+def test_get_position(root):
+    """测试获取位置"""
+    window = PetWindow(root)
+    window.set_position(300, 400)
+    assert window.get_position() == (300, 400)

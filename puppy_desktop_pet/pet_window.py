@@ -57,6 +57,8 @@ class PetWindow:
             dy = event.y - self.drag_start_y
             self.x += dx
             self.y += dy
+            self.drag_start_x = event.x
+            self.drag_start_y = event.y
             self.window.geometry(f'+{self.x}+{self.y}')
 
     def _on_drag_end(self, event):
