@@ -385,6 +385,62 @@ class StudioDispatcher:
                 elif st.status == "review" and st.needs_review:
                     await self._review_task(project, st)
 
+    async def _execute_subtasks(self, project: Project, subtasks: list):
+        """执行指定的子任务列表（用于修订流程）"""
+        max_rounds = 5
+        consecutive_empty = 0
+
+        for round_num in range(1, max_rounds + 1):
+            # 只从指定的 subtasks 中找就绪的
+            ready = []
+            for st in subtasks:
+                if st.status in ("done", "failed"):
+                    continue
+                if st.status in ("pending", "assigned", "revision"):
+                    deps_ok = True
+                    for dep_id in st.dependencies:
+                        found = any(d.id == dep_id and d.status == "done" for d in project.subtasks)
+                        if not found:
+                            deps_ok = False
+                            break
+                    if deps_ok:
+                        ready.append(st)
+
+            if not ready:
+                pending = [st for st in subtasks if st.status not in ("done", "failed")]
+                if not pending:
+                    logger.info("修订任务全部完成")
+                    break
+                consecutive_empty += 1
+                if consecutive_empty >= 3:
+                    logger.error("修订任务调度死锁，%d 个任务未完成", len(pending))
+                    for st in pending:
+                        st.status = "failed"
+                        st.error = "任务调度死锁"
+                    break
+                continue
+
+            consecutive_empty = 0
+            logger.info("修订第 %d 轮: 执行 %d 个就绪任务", round_num, len(ready))
+            await self.broadcast({
+                "type": "log",
+                "source": "调度器",
+                "target": "修订执行",
+                "message": "第 {} 轮: 返工 {} 个任务".format(round_num, len(ready))
+            })
+
+            coros = [self._exec_one(project, st) for st in ready]
+            results = await asyncio.gather(*coros, return_exceptions=True)
+
+            for i, st in enumerate(ready):
+                if isinstance(results[i], Exception):
+                    st.status = "failed"
+                    st.error = str(results[i])
+                    logger.error("修订任务 '%s' 失败: %s", st.title, str(results[i])[:100])
+                elif st.status == "review" and st.needs_review:
+                    await self._review_task(project, st)
+
+
     def _get_ready(self, project: Project) -> List[SubTask]:
         """获取就绪的子任务列表"""
         ready = []

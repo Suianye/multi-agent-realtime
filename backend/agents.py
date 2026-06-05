@@ -690,6 +690,111 @@ class ProjectManagerAgent(BaseAgent):
         return tasks
 
 
+    async def analyze_revision(self, feedback: str, project: 'Project') -> List['SubTask']:
+        """分析用户修改意见，返回需要返工的任务列表"""
+        _validate_string(feedback, "feedback")
+        if project is None:
+            raise InvalidTaskError("project 不能为 None")
+
+        self.status = "working"
+        await self.emit("agent_status", {"status": "working", "task": "分析修改意见..."})
+        await self.emit("log", {
+            "source": "🎯 Hermes",
+            "target": "修订分析",
+            "message": "正在分析修改意见: {}...".format(feedback[:60])
+        })
+        logger.info("开始分析修订意见: %s...", feedback[:80])
+
+        # 构建项目上下文
+        task_summary = "\n".join([
+            "  - {}: {} [状态:{}] 结果: {}".format(
+                st.id, st.title, st.status, (st.result or "无")[:80]
+            )
+            for st in project.subtasks
+        ])
+
+        prompt = (
+            "你是一个项目管理专家。用户对已完成的项目不满意，提出了修改意见。\n"
+            "项目名称: {}\n"
+            "原始需求: {}\n"
+            "当前任务列表:\n{}\n"
+            "用户修改意见: {}\n\n"
+            "请分析哪些任务需要返工。返回JSON格式:\n"
+            "{{\"revision_analysis\": \"分析说明\", \"tasks_to_redo\": [\"task-1\", \"task-2\"]}}\n"
+            "规则: 1. 只列出需要修改的任务ID  2. 如果不需要返工返回空列表  3. 返回纯JSON"
+        ).format(project.name, project.requirement[:200], task_summary, feedback)
+
+        result = ""
+
+        # 方法1: hermes CLI
+        if self.available and self._hermes_python:
+            try:
+                cmd = [self._hermes_python, "-m", "hermes_cli.main", "-z", "--yolo"]
+                result = await self._run_cli(cmd, timeout=120, stdin_data=prompt)
+                if result and not result.startswith("[错误]"):
+                    await self.emit("log", {"source": "🎯 Hermes", "target": "AI分析", "message": "修订分析完成"})
+            except Exception as e:
+                logger.warning("Hermes CLI 调用失败: %s", str(e)[:100])
+
+        # 方法2: claude CLI 备用
+        if not result or result.startswith("[错误]"):
+            claude_path = shutil.which("claude")
+            if claude_path:
+                try:
+                    cmd = ["claude", "-p", "--model", "mimo-v2.5-pro", "--dangerously-skip-permissions"]
+                    result = await self._run_cli(cmd, timeout=120, stdin_data=prompt)
+                    if result and not result.startswith("[错误]"):
+                        await self.emit("log", {"source": "🎯 Hermes", "target": "AI分析", "message": "Claude 修订分析完成"})
+                except Exception as e:
+                    logger.warning("Claude CLI 调用失败: %s", str(e)[:100])
+
+        # 解析结果
+        tasks_to_redo = self._parse_revision(result, project) if result else []
+
+        if not tasks_to_redo:
+            # 如果 AI 无法解析，降级为全部返工
+            tasks_to_redo = [st for st in project.subtasks if st.status == "done"]
+            await self.emit("log", {
+                "source": "🎯 Hermes",
+                "target": "降级",
+                "message": "AI分析失败，将返工所有已完成任务 ({} 个)".format(len(tasks_to_redo))
+            })
+        else:
+            await self.emit("log", {
+                "source": "🎯 Hermes",
+                "target": "修订分配",
+                "message": "需要返工 {} 个任务: {}".format(
+                    len(tasks_to_redo),
+                    ", ".join(st.title[:20] for st in tasks_to_redo)
+                )
+            })
+
+        self.status = "idle"
+        await self.emit("agent_status", {"status": "idle"})
+        return tasks_to_redo
+
+    def _parse_revision(self, result: str, project: 'Project') -> List['SubTask']:
+        """从 AI 返回结果中解析需要返工的任务"""
+        if not result:
+            return []
+        try:
+            start = result.find("{")
+            end = result.rfind("}") + 1
+            if start == -1 or end <= 0:
+                return []
+            data = json.loads(result[start:end])
+            task_ids = data.get("tasks_to_redo", [])
+            if not isinstance(task_ids, list):
+                return []
+            # 匹配实际任务
+            redo_map = {st.id: st for st in project.subtasks}
+            matched = [redo_map[tid] for tid in task_ids if tid in redo_map]
+            return matched
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning("解析修订结果失败: %s", str(e)[:80])
+            return []
+
+
 class DeveloperAgent(BaseAgent):
     """开发者 (Claude Code) - 写代码、实现功能"""
 

@@ -31,6 +31,7 @@ from dispatcher import StudioDispatcher, DispatcherError, ProjectTimeoutError
 VALID_MESSAGE_TYPES = {
     "start_project",
     "execute_task",
+    "revise_project",
     "ping",
 }
 
@@ -74,6 +75,11 @@ def _validate_message(data: Dict[str, Any], raw_size: int = 0) -> Optional[str]:
         prompt = data.get("prompt", "")
         if not prompt or not isinstance(prompt, str) or not prompt.strip():
             return "execute_task 消息缺少有效的 'prompt' 字段"
+
+    if msg_type == "revise_project":
+        feedback = data.get("feedback", "")
+        if not feedback or not isinstance(feedback, str) or not feedback.strip():
+            return "revise_project 消息缺少有效的 'feedback' 字段"
 
     return None
 
@@ -190,6 +196,110 @@ class StudioServer:
             self.clients.discard(websocket)
             logger.info("客户端已移除: #%d (剩余 %d 个)", client_id, len(self.clients))
 
+    async def _run_revision(self, feedback):
+        """执行修订流程"""
+        try:
+            await self.broadcast({
+                "type": "phase_change",
+                "phase": "revising",
+                "message": "项目经理正在分析修改意见..."
+            })
+
+            # 获取最后一个已完成的项目
+            project = None
+            for proj in reversed(list(self.dispatcher.projects.values())):
+                if proj.status == "done":
+                    project = proj
+                    break
+
+            if not project:
+                await self.broadcast({
+                    "type": "log",
+                    "source": "系统",
+                    "target": "修订",
+                    "message": "没有已完成的项目可供修订"
+                })
+                await self.broadcast({
+                    "type": "phase_change",
+                    "phase": "error",
+                    "message": "没有可修订的项目"
+                })
+                return
+
+            project.status = "revising"
+            pm = self.agents.get("hermes")
+
+            await self.broadcast({
+                "type": "log",
+                "source": "Hermes",
+                "target": "修订分析",
+                "message": "正在分析修改意见: {}...".format(feedback[:60])
+            })
+
+            # 让 Hermes 分析哪些任务需要返工
+            tasks_to_redo = await pm.analyze_revision(feedback, project)
+
+            if not tasks_to_redo:
+                await self.broadcast({
+                    "type": "log",
+                    "source": "Hermes",
+                    "target": "修订分析",
+                    "message": "修改意见不需要返工任何任务"
+                })
+                project.status = "done"
+                await self.broadcast({
+                    "type": "phase_change",
+                    "phase": "done",
+                    "message": "无需修改"
+                })
+                return
+
+            await self.broadcast({
+                "type": "log",
+                "source": "Hermes",
+                "target": "修订分配",
+                "message": "需要返工 {} 个任务".format(len(tasks_to_redo))
+            })
+
+            # 重置需要返工的任务
+            for task in tasks_to_redo:
+                task.status = "pending"
+                task.result = ""
+                task.review_result = None
+
+            # 重新执行
+            project.status = "executing"
+            await self.broadcast({
+                "type": "phase_change",
+                "phase": "executing",
+                "message": "开始返工 {} 个任务...".format(len(tasks_to_redo))
+            })
+
+            await self.dispatcher._execute_subtasks(project, tasks_to_redo)
+
+            all_done = all(t.status == "done" for t in project.subtasks)
+            project.status = "done" if all_done else "error"
+
+            await self.broadcast({
+                "type": "phase_change",
+                "phase": "done" if all_done else "error",
+                "message": "修订完成" if all_done else "修订失败"
+            })
+
+            await self.broadcast({
+                "type": "project_complete",
+                "project_id": project.id,
+                "status": project.status
+            })
+
+        except Exception as e:
+            logger.error("修订执行错误: %s", str(e), exc_info=True)
+            await self.broadcast({
+                "type": "phase_change",
+                "phase": "error",
+                "message": "修订失败: {}".format(str(e)[:200])
+            })
+
     async def _handle(self, data: dict, websocket=None):
         """处理已验证的消息"""
         msg_type = data.get("type")
@@ -227,6 +337,15 @@ class StudioServer:
                 logger.info("收到任务请求: %s...", task_name)
                 task = asyncio.create_task(self._run_project(task_name, prompt))
                 self._active_projects[task_name] = task
+
+        elif msg_type == "revise_project":
+            feedback = data.get("feedback", "").strip()
+            if feedback:
+                logger.info("收到修订请求: %s", feedback[:60])
+                rev_name = "revision-{}".format(feedback[:20])
+                if rev_name not in self._active_projects:
+                    task = asyncio.create_task(self._run_revision(feedback))
+                    self._active_projects[rev_name] = task
 
         elif msg_type == "ping":
             logger.debug("收到 ping 消息")

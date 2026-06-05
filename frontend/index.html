@@ -17,7 +17,12 @@ body{font-family:'Microsoft YaHei','Segoe UI',sans-serif;background:var(--bg);mi
 .phase{flex:1;padding:10px;text-align:center;border-radius:10px;font-size:.85em;font-weight:600;background:var(--surface);border:1px solid var(--border);color:var(--text2);transition:all .4s}
 .phase.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:var(--accent);transform:scale(1.02);box-shadow:0 0 20px rgba(0,210,255,.3)}
 .phase.done{background:var(--green);color:#fff;border-color:var(--green)}
-.project-input{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px}
+.revision-input{background:rgba(255,152,0,0.08);border:1px solid rgba(255,152,0,0.3);border-radius:12px;padding:16px;margin-bottom:16px}
+  .revision-input h2{margin:0 0 10px;font-size:16px;color:#ff9800}
+  .btn-warning{background:#ff9800;color:#fff;border:none;border-radius:8px;padding:8px 20px;cursor:pointer;font-size:14px}
+  .btn-warning:hover{background:#f57c00}
+  .btn-warning:disabled{opacity:0.5;cursor:not-allowed}
+  .project-input{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px}
 .project-input h2{font-size:1em;color:var(--accent);margin-bottom:10px}
 .input-row{display:flex;gap:8px;flex-wrap:wrap}
 .input-row input,.input-row textarea{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-size:.9em;flex:1;min-width:200px;font-family:inherit}
@@ -102,6 +107,7 @@ body{font-family:'Microsoft YaHei','Segoe UI',sans-serif;background:var(--bg);mi
     <div class="phase" id="phase-executing">⚡ 执行</div>
     <div class="phase" id="phase-reviewing">🔍 审查</div>
     <div class="phase" id="phase-done">✅ 完成</div>
+    <div class="phase" id="phase-revising">🔄 修订</div>
   </div>
 
   <div class="project-input">
@@ -110,6 +116,14 @@ body{font-family:'Microsoft YaHei','Segoe UI',sans-serif;background:var(--bg);mi
       <input type="text" id="projName" placeholder="项目名称（可选）">
       <textarea id="projReq" placeholder="描述你的需求，例如：写一个Python Web API，支持用户注册、登录、CRUD操作..."></textarea>
       <button class="btn btn-primary" id="btnStart" onclick="startProject()">🚀 启动项目</button>
+    </div>
+  </div>
+
+  <div class="revision-input" id="revisionArea" style="display:none">
+    <h2>💬 提交修改意见</h2>
+    <div class="input-row">
+      <textarea id="revisionFeedback" placeholder="描述你对当前结果的不满和修改要求，例如：狗太丑了，换成柯基风格，颜色要更鲜艳..."></textarea>
+      <button class="btn btn-warning" id="btnRevise" onclick="submitRevision()">🔄 提交修订</button>
     </div>
   </div>
 
@@ -189,7 +203,18 @@ function handleMessage(d){
   switch(d.type){
     case'agent_status':updateAgent(d);break;
     case'log':addLog(d.source,d.target,d.message);break;
-    case'phase_change':setPhase(d.phase,d.message);break;
+    case'phase_change':
+  setPhase(d.phase,d.message);
+  if(d.phase==='done'){
+    document.getElementById('revisionArea').style.display='';
+    document.getElementById('btnRevise').disabled=false;
+    document.getElementById('btnRevise').textContent='🔄 提交修订';
+  }
+  if(d.phase==='revising'){
+    document.getElementById('btnRevise').disabled=true;
+    document.getElementById('btnRevise').textContent='⏳ 修订中...';
+  }
+  break;
     case'project_created':addLog('系统','项目','创建项目: '+d.name);break;
     case'task_breakdown':showTaskBreakdown(d.subtasks);break;
     case'task_status':updateTaskStatus(d);break;
@@ -278,6 +303,16 @@ function startProject(){
   document.getElementById('resultsArea').innerHTML='<div class="empty"><div class="empty-icon">⏳</div>等待执行结果...</div>';
   ws.send(JSON.stringify({type:'start_project',name:name||req.substring(0,30),requirement:req}));
   addLog('用户','系统','提交需求: '+req.substring(0,50));
+}
+
+function submitRevision(){
+  const fb=document.getElementById('revisionFeedback').value.trim();
+  if(!fb){document.getElementById('revisionFeedback').focus();return}
+  if(!ws||ws.readyState!==WebSocket.OPEN){addLog('系统','错误','WebSocket 未连接');return}
+  document.getElementById('btnRevise').disabled=true;
+  document.getElementById('btnRevise').textContent='⏳ 修订中...';
+  ws.send(JSON.stringify({type:'revise_project',feedback:fb}));
+  addLog('用户','修订','提交修改意见: '+fb.substring(0,50));
 }
 
 function esc(t){const d=document.createElement('div');d.textContent=t||'';return d.innerHTML}
